@@ -1,0 +1,5 @@
+conf_name: 'RKR'
+batch_size: 50
+epochs: 150
+K: 2
+task_num: 10

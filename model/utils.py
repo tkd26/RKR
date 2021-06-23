@@ -5,3 +5,11 @@ try:
     from torch.hub import load_state_dict_from_url
 except ImportError:
     from torch.utils.model_zoo import load_url as load_state_dict_from_url
+
+def load_init_model_state(from_model, to_model):
+    from_state_keys = [k for k, v in from_model.state_dict().items()]
+    for k, v in to_model.state_dict().items():
+        if k in from_state_keys:
+            to_model.state_dict()[k] = from_model.state_dict()[k]
+
+    return to_model

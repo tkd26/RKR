@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+import os
+import argparse
+from data.data_loader import load_cifar100
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -7,106 +10,163 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from model.resnet import resnet18, resnet_addfc
+from torch.optim.lr_scheduler import MultiStepLR
+import tensorboardX as tbx
 
+from model.resnet import resnet18, resnet_addfc
+from model.resnet_RKR import resnet18 as resnet18_RKR
+from model.utils import load_init_model_state
+from data.data_loader import *
+from util import get_config
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--config', type=str, help='Path to the config file.')
+# parser.add_argument('--resume', type=bool, default=False, help='Resume training.')
+# parser.add_argument('--gpu_id', type=int, default='-1', help='gpu id: e.g. 0 1. use -1 for CPU')
+opts = parser.parse_args()
+
+conf = get_config(opts.config)
 ########################################################################
 # Setup
+
+writer = tbx.SummaryWriter(log_dir="./results/{}/logs/".format(conf['conf_name']))
+
+model_path = './results/{}/model/'.format(conf['conf_name'])
+if not os.path.exists(model_path):
+    os.mkdir(model_path)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(device)
 
-transform = transforms.Compose(
-    [transforms.ToTensor(),
-     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+best_score = 0
 
-batch_size = 64
-epochs = 2
-
-# trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
-#                                         download=True, transform=transform)
-trainset = torchvision.datasets.CIFAR100(root='./data', train=True,
-                                        download=True, transform=transform)
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
-                                          shuffle=True, num_workers=2)
-
-# testset = torchvision.datasets.CIFAR10(root='./data', train=False,
-#                                        download=True, transform=transform)
-testset = torchvision.datasets.CIFAR100(root='./data', train=False,
-                                       download=True, transform=transform)                                       
-testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
-                                         shuffle=False, num_workers=2)
-
-# classes = ('plane', 'car', 'bird', 'cat',
-#            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-
-classes = (
-    'apple', 'aquarium_fish', 'baby', 'bear', 'beaver', 'bed', 'bee', 'beetle', 
-    'bicycle', 'bottle', 'bowl', 'boy', 'bridge', 'bus', 'butterfly', 'camel', 
-    'can', 'castle', 'caterpillar', 'cattle', 'chair', 'chimpanzee', 'clock', 
-    'cloud', 'cockroach', 'couch', 'crab', 'crocodile', 'cup', 'dinosaur', 
-    'dolphin', 'elephant', 'flatfish', 'forest', 'fox', 'girl', 'hamster', 
-    'house', 'kangaroo', 'keyboard', 'lamp', 'lawn_mower', 'leopard', 'lion',
-    'lizard', 'lobster', 'man', 'maple_tree', 'motorcycle', 'mountain', 'mouse',
-    'mushroom', 'oak_tree', 'orange', 'orchid', 'otter', 'palm_tree', 'pear',
-    'pickup_truck', 'pine_tree', 'plain', 'plate', 'poppy', 'porcupine',
-    'possum', 'rabbit', 'raccoon', 'ray', 'road', 'rocket', 'rose',
-    'sea', 'seal', 'shark', 'shrew', 'skunk', 'skyscraper', 'snail', 'snake',
-    'spider', 'squirrel', 'streetcar', 'sunflower', 'sweet_pepper', 'table',
-    'tank', 'telephone', 'television', 'tiger', 'tractor', 'train', 'trout',
-    'tulip', 'turtle', 'wardrobe', 'whale', 'willow_tree', 'wolf', 'woman',
-    'worm'
-)
+trainloader_list, testloader_list, classes_list= load_split_cifar100(conf['batch_size'], conf['task_num'])
+print('Finished Loading Data')
 
 ########################################################################
 # train
 
-# get some random training images
-dataiter = iter(trainloader)
-images, labels = dataiter.next()
-
-# print labels
-# print(' '.join('%5s' % classes[labels[j]] for j in range(batch_size)))
-
 # define model
-net = resnet18().to(device)
-net = resnet_addfc(net, 100)
+net = resnet18(pretrained=True)
+
+# net = resnet_addfc(net, 100)
+net = resnet_addfc(net, 10).to(device)
 
 # loss
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss().to(device)
+
 # optimizer
-optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
+scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
 
 # train
-for epoch in range(epochs):  # loop over the dataset multiple times
+for task in range(conf['task_num']):
+    print('------------------------------')
+    print('task{}'.format(task))
+    trainloader, testloader, classes = trainloader_list[task], testloader_list[task], classes_list[task]
+    if task != 0:
+        init_net = net
+        net = resnet18_RKR(pretrained=False, num_classes=10, K=conf['K']).to(device) # best modelをロードするとさらに良いかも
+        net = load_init_model_state(from_model=init_net, to_model=net) # もしかしたら，前のタスクで初期化？
+        train_params = []
+        for name, param in net.named_parameters():
+            if 'sfg' in name or 'rg' in name:
+                param.requires_grad = True
+                # print(name)
+            else:
+                param.requires_grad = False
 
-    running_loss = 0.0
-    for i, data in enumerate(trainloader, 0):
-        # get the inputs; data is a list of [inputs, labels]
-        inputs, labels = data
-        inputs, labels = inputs.to(device), labels.to(device)
+        # optimizer
+        param_list = [
+                net.rg_conv.parameters(),# net.rg_fc.parameters(),
+                net.sfg_conv.parameters(),# net.sfg_fc.parameters(),
+                # layer1
+                net.layer1[0].rg1.parameters(), net.layer1[0].rg2.parameters(), net.layer1[0].sfg1.parameters(), net.layer1[0].sfg2.parameters(),
+                net.layer1[1].rg1.parameters(), net.layer1[1].rg2.parameters(), net.layer1[1].sfg1.parameters(), net.layer1[1].sfg2.parameters(),
+                # layer2
+                net.layer2[0].rg1.parameters(), net.layer2[0].rg2.parameters(), net.layer2[0].sfg1.parameters(), net.layer2[0].sfg2.parameters(),
+                net.layer2[1].rg1.parameters(), net.layer2[1].rg2.parameters(), net.layer2[1].sfg1.parameters(), net.layer2[1].sfg2.parameters(),
+                # layer3
+                net.layer3[0].rg1.parameters(), net.layer3[0].rg2.parameters(), net.layer3[0].sfg1.parameters(), net.layer3[0].sfg2.parameters(),
+                net.layer3[1].rg1.parameters(), net.layer3[1].rg2.parameters(), net.layer3[1].sfg1.parameters(), net.layer3[1].sfg2.parameters(),
+                # layer4
+                net.layer4[0].rg1.parameters(), net.layer4[0].rg2.parameters(), net.layer4[0].sfg1.parameters(), net.layer4[0].sfg2.parameters(),
+                net.layer4[1].rg1.parameters(), net.layer4[1].rg2.parameters(), net.layer4[1].sfg1.parameters(), net.layer4[1].sfg2.parameters(),
+            ]
 
-        # zero the parameter gradients
-        optimizer.zero_grad()
+        opt_param_list = []
+        for param in param_list:
+            opt_param_list.append({'params': param})
 
-        # forward + backward + optimize
-        outputs = net(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+        optimizer = optim.SGD(
+            opt_param_list,
+            lr=0.01, momentum=0.9)
+        scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
 
-        # print statistics
-        running_loss += loss.item()
-        if i % 2000 == 1999:    # print every 2000 mini-batches
-            print('[%d, %5d] loss: %.3f' %
-                  (epoch + 1, i + 1, running_loss / 2000))
+
+    for epoch in range(1, conf['epochs'] + 1):  # loop over the dataset multiple times
+
+        # net.train()
+        running_loss = 0.0
+        for i, data in enumerate(trainloader, 0):
+            # get the inputs; data is a list of [inputs, labels]
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            # zero the parameter gradients
+            optimizer.zero_grad()
+
+            # forward + backward + optimize
+            outputs = net(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            # print statistics
+            running_loss += loss.item()
+        scheduler.step()
+
+        # eval
+        correct = 0
+        total = 0
+        # net.eval()
+        with torch.no_grad():
+            for data in testloader:
+                inputs, labels = data
+                inputs, labels = inputs.to(device), labels.to(device)
+                # calculate outputs by running images through the network 
+                outputs = net(inputs)
+                # the class with the highest energy is what we choose as prediction
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+
+        # save results
+        if epoch % 10 == 0:
+            epoch_loss = running_loss / (i+1)
             running_loss = 0.0
+            writer.add_scalar("train/task{}".format(task), epoch, epoch_loss)
+
+            eval_score = correct / total
+            print('task%d [%d] loss train: %.3f eval: %.3f' % (task, epoch, epoch_loss, eval_score))
+            writer.add_scalar("eval/task{}".format(task), epoch, eval_score)
+
+            # save trained model
+            task_model_path = './results/{}/model/{}'.format(conf['conf_name'], task)
+            if not os.path.exists(task_model_path):
+                os.mkdir(task_model_path)
+            
+            model_path_name = '{}/{:06}.pth'.format(task_model_path, epoch)
+            torch.save(net.state_dict(), model_path_name)
+
+            if best_score < eval_score:
+                bestmodel_path_name = '{}/best_model.pth'.format(task_model_path, task)
+                torch.save(net.state_dict(), bestmodel_path_name)
+                best_score = eval_score
 
 print('Finished Training')
 
-# save trained model
-PATH = './cifar_net.pth'
-torch.save(net.state_dict(), PATH)
-
+writer.close()
 
 ########################################################################
 # eval samples
@@ -133,22 +193,22 @@ torch.save(net.state_dict(), PATH)
 ########################################################################
 # eval score
 
-correct = 0
-total = 0
+# correct = 0
+# total = 0
 
-with torch.no_grad():
-    for data in testloader:
-        inputs, labels = data
-        inputs, labels = inputs.to(device), labels.to(device)
-        # calculate outputs by running images through the network 
-        outputs = net(inputs)
-        # the class with the highest energy is what we choose as prediction
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+# with torch.no_grad():
+#     for data in testloader:
+#         inputs, labels = data
+#         inputs, labels = inputs.to(device), labels.to(device)
+#         # calculate outputs by running images through the network 
+#         outputs = net(inputs)
+#         # the class with the highest energy is what we choose as prediction
+#         _, predicted = torch.max(outputs.data, 1)
+#         total += labels.size(0)
+#         correct += (predicted == labels).sum().item()
 
-print('Accuracy of the network on the 10000 test images: %d %%' % (
-    100 * correct / total))
+# print('Accuracy of the network on the 10000 test images: %d %%' % (
+#     100 * correct / total))
 
 ########################################################################
 # eval class score

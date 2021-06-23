@@ -259,9 +259,10 @@ def _resnet(
 ) -> ResNet:
     model = ResNet(block, layers, **kwargs)
     if pretrained:
-        state_dict = load_state_dict_from_url(model_urls[arch],
-                                              progress=progress)
-        model.load_state_dict(state_dict)
+        # state_dict = load_state_dict_from_url(model_urls[arch],
+        #                                       progress=progress)
+        state_dict = '/host/space0/takeda-m/jupyter/notebook/RKR/model/resnet18-f37072fd.pth'
+        model.load_state_dict(torch.load(state_dict))
     return model
 
 
@@ -388,5 +389,8 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
                    pretrained, progress, **kwargs)
 
 def resnet_addfc(net, num_classes):
-    net.add_module('fc_classes', nn.Linear(1000, num_classes))
+    net.fc = nn.Linear(512, num_classes)
     return net
+
+
+# def add_RKR():
