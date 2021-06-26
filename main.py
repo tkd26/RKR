@@ -67,42 +67,24 @@ for task in range(conf['task_num']):
     if task != 0:
         init_net = net
         net = resnet18_RKR(pretrained=False, num_classes=10, K=conf['K']).to(device) # best modelをロードするとさらに良いかも
-        net = load_init_model_state(from_model=init_net, to_model=net) # もしかしたら，前のタスクで初期化？
+        net = load_init_model_state(from_model=init_net, to_model=net) # 前のタスクで初期化
+
         train_params = []
         for name, param in net.named_parameters():
             if 'sfg' in name or 'rg' in name:
                 param.requires_grad = True
-                # print(name)
+            elif name in ['fc.weight', 'fc.bias']:
+                param.requires_grad = True
+            elif 'bn' in name or 'downsample.1' in name:
+                param.requires_grad = True
+            # elif name in ['conv1.weight', 'conv1.bias']:
+            #     param.requires_grad = True
             else:
                 param.requires_grad = False
 
         # optimizer
-        param_list = [
-                net.rg_conv.parameters(),# net.rg_fc.parameters(),
-                net.sfg_conv.parameters(),# net.sfg_fc.parameters(),
-                # layer1
-                net.layer1[0].rg1.parameters(), net.layer1[0].rg2.parameters(), net.layer1[0].sfg1.parameters(), net.layer1[0].sfg2.parameters(),
-                net.layer1[1].rg1.parameters(), net.layer1[1].rg2.parameters(), net.layer1[1].sfg1.parameters(), net.layer1[1].sfg2.parameters(),
-                # layer2
-                net.layer2[0].rg1.parameters(), net.layer2[0].rg2.parameters(), net.layer2[0].sfg1.parameters(), net.layer2[0].sfg2.parameters(),
-                net.layer2[1].rg1.parameters(), net.layer2[1].rg2.parameters(), net.layer2[1].sfg1.parameters(), net.layer2[1].sfg2.parameters(),
-                # layer3
-                net.layer3[0].rg1.parameters(), net.layer3[0].rg2.parameters(), net.layer3[0].sfg1.parameters(), net.layer3[0].sfg2.parameters(),
-                net.layer3[1].rg1.parameters(), net.layer3[1].rg2.parameters(), net.layer3[1].sfg1.parameters(), net.layer3[1].sfg2.parameters(),
-                # layer4
-                net.layer4[0].rg1.parameters(), net.layer4[0].rg2.parameters(), net.layer4[0].sfg1.parameters(), net.layer4[0].sfg2.parameters(),
-                net.layer4[1].rg1.parameters(), net.layer4[1].rg2.parameters(), net.layer4[1].sfg1.parameters(), net.layer4[1].sfg2.parameters(),
-            ]
-
-        opt_param_list = []
-        for param in param_list:
-            opt_param_list.append({'params': param})
-
-        optimizer = optim.SGD(
-            opt_param_list,
-            lr=0.01, momentum=0.9)
+        optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
         scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
-
 
     for epoch in range(1, conf['epochs'] + 1):  # loop over the dataset multiple times
 

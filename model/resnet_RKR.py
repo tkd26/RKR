@@ -28,34 +28,30 @@ class RG_Conv(nn.Module):
     def __init__(self, weight_shape, K: int, task_num: int):
         super().__init__()
         w, h, c_in, c_out = weight_shape
-        self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(w * c_in, K))) for _ in range(task_num)])
-        self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h * c_out))) for _ in range(task_num)])
-        # self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(w * c_in, K)) for _ in range(task_num)])
-        # self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h * c_out)) for _ in range(task_num)])
+        # self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(w * c_in, K))) for _ in range(task_num)])
+        # self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h * c_out))) for _ in range(task_num)])
+        self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(w * c_in, K)) for _ in range(task_num)])
+        self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h * c_out)) for _ in range(task_num)])
     
     def forward(self, weight, task: int):
         R = torch.mm(self.LM_list[task], self.RM_list[task])
         R = R.view(weight.shape)
         R = R + weight
-        R = nn.Parameter(R)
-        # R.requires_grad = True
         return R
 
 class RG_FC(nn.Module):
     def __init__(self, weight_shape, K: int, task_num: int):
         super().__init__()
         h_in, h_out = weight_shape
-        self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(h_out, K))) for _ in range(task_num)])
-        self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h_in))) for _ in range(task_num)])
-        # self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(h_out, K)) for _ in range(task_num)])
-        # self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h_in)) for _ in range(task_num)])
+        # self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(h_out, K))) for _ in range(task_num)])
+        # self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h_in))) for _ in range(task_num)])
+        self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(h_out, K)) for _ in range(task_num)])
+        self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h_in)) for _ in range(task_num)])
 
     def forward(self, weight, task: int):
         R = torch.mm(self.LM_list[task], self.RM_list[task])
         R = R.view(weight.shape)
         R = R + weight
-        R = nn.Parameter(R)
-        # R.requires_grad = True
         return R
 
 class SFG_Conv(nn.Module):
@@ -63,7 +59,8 @@ class SFG_Conv(nn.Module):
         super().__init__()
         self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
     
-    def forward(self, x, task: int):
+    # def forward(self, x, task: int):
+    def forward(self, x, task=0):
         F = self.F_list[task]
         F = F.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         F = F.repeat(x.shape[0], 1, x.shape[2], x.shape[3])
@@ -101,7 +98,7 @@ class BasicBlock(nn.Module):
         inplanes: int,
         planes: int,
         stride: int = 1,
-        downsample: Optional[nn.Module] = None,
+        downsample = None,
         groups: int = 1,
         base_width: int = 64,
         dilation: int = 1,
@@ -123,21 +120,25 @@ class BasicBlock(nn.Module):
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
-        self.stride = stride
+        self.stride = stride 
 
         if RG:
             self.rg1 = RG_Conv([3, 3, inplanes, planes], K, TASK_NUM)
             self.rg2 = RG_Conv([3, 3, planes, planes], K, TASK_NUM)
+            if self.downsample is not None:
+                self.rg_down_conv = RG_Conv([1, 1, inplanes, planes * self.expansion], K, TASK_NUM)
 
         if SFG:
             self.sfg1 = SFG_Conv(planes, TASK_NUM)
             self.sfg2 = SFG_Conv(planes, TASK_NUM)
+            if self.downsample is not None:
+                self.sfg_down_conv = SFG_Conv(planes * self.expansion, TASK_NUM)
 
     def forward(self, x: Tensor) -> Tensor:
         identity = x
 
         if RG:
-            self.conv1.weight = self.rg1(self.conv1.weight, task=0)
+            self.conv1.weight.data = self.rg1(self.conv1.weight.data, task=0)
 
         out = self.conv1(x)
         if SFG: 
@@ -146,7 +147,7 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
 
         if RG:
-            self.conv2.weight = self.rg2(self.conv2.weight, task=0)
+            self.conv2.weight.data = self.rg2(self.conv2.weight.data, task=0)
 
         out = self.conv2(out)
         if SFG:
@@ -154,7 +155,15 @@ class BasicBlock(nn.Module):
         out = self.bn2(out)
 
         if self.downsample is not None:
-            identity = self.downsample(x)
+            if RG:
+                self.downsample[0].weight.data = self.rg_down_conv(self.downsample[0].weight.data, task=0)
+            
+            identity = self.downsample[0](x)
+            if SFG:
+                identity = self.sfg_down_conv(identity, task=0)
+            identity = self.downsample[1](identity)
+
+            # identity = self.downsample(x)
 
         out += identity
         out = self.relu(out)
@@ -300,11 +309,11 @@ class ResNet(nn.Module):
         if dilate:
             self.dilation *= stride
             stride = 1
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
+        if stride != 1 or self.inplanes != planes * block.expansion: 
+            downsample = nn.ModuleList([
                 conv1x1(self.inplanes, planes * block.expansion, stride),
                 norm_layer(planes * block.expansion),
-            )
+            ])
 
         layers = []
         layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
@@ -319,11 +328,11 @@ class ResNet(nn.Module):
 
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
-        # if RG:
-        #     self.conv1.weight = self.rg_conv(self.conv1.weight, task=0)
+        if RG:
+            self.conv1.weight.data = self.rg_conv(self.conv1.weight.data, task=0)
         x = self.conv1(x)
-        # if SFG:
-        #     x = self.sfg_conv(x, task=0)
+        if SFG:
+            x = self.sfg_conv(x, task=0)
 
         x = self.bn1(x)
         x = self.relu(x)
