@@ -51,25 +51,28 @@ net = resnet18(pretrained=True)
 
 # net = resnet_addfc(net, 100)
 net = resnet_addfc(net, 10).to(device)
+init_net = net
+
+net = resnet18_RKR(pretrained=False, num_classes=10, K=conf['K']).to(device) # best modelをロードするとさらに良いかも
+net = load_init_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
 
 # loss
 criterion = nn.CrossEntropyLoss().to(device)
 
 # optimizer
-optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
-scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
+# optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
+# scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
 
 # train
 for task in range(conf['task_num']):
     print('------------------------------')
     print('task{}'.format(task))
     trainloader, testloader, classes = trainloader_list[task], testloader_list[task], classes_list[task]
-    if task != 0:
-        init_net = net
-        net = resnet18_RKR(pretrained=False, num_classes=10, K=conf['K']).to(device) # best modelをロードするとさらに良いかも
-        net = load_init_model_state(from_model=init_net, to_model=net) # 前のタスクで初期化
-
-        train_params = []
+    if task == 0:
+        for name, param in net.named_parameters():
+            if 'sfg' in name or 'rg' in name:
+                param.requires_grad = False
+    else:
         for name, param in net.named_parameters():
             if 'sfg' in name or 'rg' in name:
                 param.requires_grad = True
@@ -82,9 +85,9 @@ for task in range(conf['task_num']):
             else:
                 param.requires_grad = False
 
-        # optimizer
-        optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
-        scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
+    # optimizer
+    optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
+    scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
 
     for epoch in range(1, conf['epochs'] + 1):  # loop over the dataset multiple times
 
@@ -99,7 +102,7 @@ for task in range(conf['task_num']):
             optimizer.zero_grad()
 
             # forward + backward + optimize
-            outputs = net(inputs)
+            outputs = net(inputs, task)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -117,7 +120,7 @@ for task in range(conf['task_num']):
                 inputs, labels = data
                 inputs, labels = inputs.to(device), labels.to(device)
                 # calculate outputs by running images through the network 
-                outputs = net(inputs)
+                outputs = net(inputs, task)
                 # the class with the highest energy is what we choose as prediction
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)

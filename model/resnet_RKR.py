@@ -4,7 +4,7 @@ import torch.nn as nn
 from .utils import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
 
-TASK_NUM = 1
+TASK_NUM = 10
 RG, SFG = True, True
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
@@ -60,7 +60,7 @@ class SFG_Conv(nn.Module):
         self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
     
     # def forward(self, x, task: int):
-    def forward(self, x, task=0):
+    def forward(self, x, task):
         F = self.F_list[task]
         F = F.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         F = F.repeat(x.shape[0], 1, x.shape[2], x.shape[3])
@@ -134,33 +134,33 @@ class BasicBlock(nn.Module):
             if self.downsample is not None:
                 self.sfg_down_conv = SFG_Conv(planes * self.expansion, TASK_NUM)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, task: int) -> Tensor:
         identity = x
 
         if RG:
-            self.conv1.weight.data = self.rg1(self.conv1.weight.data, task=0)
+            self.conv1.weight.data = self.rg1(self.conv1.weight.data, task=task)
 
         out = self.conv1(x)
         if SFG: 
-            out = self.sfg1(out, task=0)
+            out = self.sfg1(out, task=task)
         out = self.bn1(out)
         out = self.relu(out)
 
         if RG:
-            self.conv2.weight.data = self.rg2(self.conv2.weight.data, task=0)
+            self.conv2.weight.data = self.rg2(self.conv2.weight.data, task=task)
 
         out = self.conv2(out)
         if SFG:
-            out = self.sfg2(out, task=0)
+            out = self.sfg2(out, task=task)
         out = self.bn2(out)
 
         if self.downsample is not None:
             if RG:
-                self.downsample[0].weight.data = self.rg_down_conv(self.downsample[0].weight.data, task=0)
+                self.downsample[0].weight.data = self.rg_down_conv(self.downsample[0].weight.data, task=task)
             
             identity = self.downsample[0](x)
             if SFG:
-                identity = self.sfg_down_conv(identity, task=0)
+                identity = self.sfg_down_conv(identity, task=task)
             identity = self.downsample[1](identity)
 
             # identity = self.downsample(x)
@@ -245,6 +245,8 @@ class ResNet(nn.Module):
     ) -> None:
         super(ResNet, self).__init__()
 
+        self.layers = layers
+
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -324,38 +326,43 @@ class ResNet(nn.Module):
                                 base_width=self.base_width, dilation=self.dilation,
                                 norm_layer=norm_layer, K=K))
 
-        return nn.Sequential(*layers)
+        return nn.ModuleList(layers)
+        # return nn.Sequential(*layers)
 
-    def _forward_impl(self, x: Tensor) -> Tensor:
+    def _forward_impl(self, x: Tensor, task: int) -> Tensor:
         # See note [TorchScript super()]
         if RG:
-            self.conv1.weight.data = self.rg_conv(self.conv1.weight.data, task=0)
+            self.conv1.weight.data = self.rg_conv(self.conv1.weight.data, task=task)
         x = self.conv1(x)
         if SFG:
-            x = self.sfg_conv(x, task=0)
+            x = self.sfg_conv(x, task=task)
 
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        for i in range(self.layers[0]):
+            x = self.layer1[i](x, task)
+        for i in range(self.layers[1]):
+            x = self.layer2[i](x, task)
+        for i in range(self.layers[2]):
+            x = self.layer3[i](x, task)
+        for i in range(self.layers[3]):
+            x = self.layer4[i](x, task)
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
 
         # if RG:
-        #     self.fc.weight = self.rg_fc(self.fc.weight, task=0)
+        #     self.fc.weight = self.rg_fc(self.fc.weight, task=task)
         x = self.fc(x)
         # if SFG:
-        #     x = self.sfg_fc(x, task=0)
+        #     x = self.sfg_fc(x, task=task)
 
         return x
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self._forward_impl(x)
+    def forward(self, x: Tensor, task: int) -> Tensor:
+        return self._forward_impl(x, task)
 
 
 def _resnet(
