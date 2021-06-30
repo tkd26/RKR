@@ -4,6 +4,12 @@ import torch.nn as nn
 from .utils import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
 
+seed = 0
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 TASK_NUM = 10
 RG, SFG = True, True
 
@@ -331,11 +337,11 @@ class ResNet(nn.Module):
 
     def _forward_impl(self, x: Tensor, task: int) -> Tensor:
         # See note [TorchScript super()]
-        if RG:
-            self.conv1.weight.data = self.rg_conv(self.conv1.weight.data, task=task)
+        # if RG:
+        #     self.conv1.weight.data = self.rg_conv(self.conv1.weight.data, task=task)
         x = self.conv1(x)
-        if SFG:
-            x = self.sfg_conv(x, task=task)
+        # if SFG:
+        #     x = self.sfg_conv(x, task=task)
 
         x = self.bn1(x)
         x = self.relu(x)

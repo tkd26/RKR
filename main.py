@@ -15,19 +15,28 @@ import tensorboardX as tbx
 
 from model.resnet import resnet18, resnet_addfc
 from model.resnet_RKR import resnet18 as resnet18_RKR
-from model.utils import load_init_model_state
+from model.utils import load_pre_model_state, load_pre_rg_sfg_state
 from data.data_loader import *
 from util import get_config
+
+seed = 0
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str, help='Path to the config file.')
 # parser.add_argument('--resume', type=bool, default=False, help='Resume training.')
-# parser.add_argument('--gpu_id', type=int, default='-1', help='gpu id: e.g. 0 1. use -1 for CPU')
+parser.add_argument('--gpu_id', type=str, default='0', help='gpu id: e.g. 0 1. use -1 for CPU')
 opts = parser.parse_args()
 
 conf = get_config(opts.config)
 ########################################################################
 # Setup
+
+os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
 
 writer = tbx.SummaryWriter(log_dir="./results/{}/logs/".format(conf['conf_name']))
 
@@ -47,14 +56,13 @@ print('Finished Loading Data')
 # train
 
 # define model
-net = resnet18(pretrained=True)
+init_net = resnet18(pretrained=True)
 
 # net = resnet_addfc(net, 100)
-net = resnet_addfc(net, 10).to(device)
-init_net = net
+init_net = resnet_addfc(init_net, 10).to(device)
 
 net = resnet18_RKR(pretrained=False, num_classes=10, K=conf['K']).to(device) # best modelをロードするとさらに良いかも
-net = load_init_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
+net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
 
 # loss
 criterion = nn.CrossEntropyLoss().to(device)
@@ -71,22 +79,26 @@ for task in range(conf['task_num']):
     if task == 0:
         for name, param in net.named_parameters():
             if 'sfg' in name or 'rg' in name:
-                param.requires_grad = False
+                if name.split('.')[-1] == str(task):
+                    param.requires_grad = True
+                    # param.requires_grad = False
     else:
+        net = load_pre_rg_sfg_state(net, task) 
         for name, param in net.named_parameters():
             if 'sfg' in name or 'rg' in name:
-                param.requires_grad = True
+                if name.split('.')[-1] == str(task):
+                    param.requires_grad = True
             elif name in ['fc.weight', 'fc.bias']:
                 param.requires_grad = True
             elif 'bn' in name or 'downsample.1' in name:
                 param.requires_grad = True
-            # elif name in ['conv1.weight', 'conv1.bias']:
-            #     param.requires_grad = True
+            elif name in ['conv1.weight', 'conv1.bias']:
+                param.requires_grad = True
             else:
                 param.requires_grad = False
 
     # optimizer
-    optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
+    optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
     scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
 
     for epoch in range(1, conf['epochs'] + 1):  # loop over the dataset multiple times

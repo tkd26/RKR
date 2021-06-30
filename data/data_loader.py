@@ -3,6 +3,12 @@ from torch.functional import split
 import torchvision
 import torchvision.transforms as transforms
 
+seed = 0
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 class Mydatasets(torch.utils.data.Dataset):
     def __init__(self, path, transform, class_id, train = True):
         self.transform = transform
@@ -55,18 +61,18 @@ def load_cifar100(batch_size, transform):
 
 
 def load_split_cifar100(batch_size, split_num):
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    normalize = transforms.Normalize(mean=[0.5074, 0.4867, 0.4411],
+                                     std=[0.2011, 0.1987, 0.2025])
                                      
-    train_transforms = torchvision.transforms.Compose([
-        torchvision.transforms.RandomCrop(32, padding=4),
-        torchvision.transforms.RandomHorizontalFlip(),
-        torchvision.transforms.ToTensor(),
+    train_transforms = transforms.Compose([
+        transforms.RandomCrop(32, padding=4, padding_mode="reflect"),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
         normalize,
     ])
     
-    test_transforms = torchvision.transforms.Compose([
-        torchvision.transforms.ToTensor(),
+    test_transforms = transforms.Compose([
+        transforms.ToTensor(),
         normalize,
     ])
 
