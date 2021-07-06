@@ -1,5 +1,10 @@
 conf_name: 'RKR'
-batch_size: 50
+batch_size: 200
 epochs: 150
-K: 2
-task_num: 10
+
+model:
+  K: 2
+  task_num: 10
+  class_num: 10
+  RG: True
+  SFG: False

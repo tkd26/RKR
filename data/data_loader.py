@@ -10,12 +10,11 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 class Mydatasets(torch.utils.data.Dataset):
-    def __init__(self, path, transform, class_id, train = True):
+    def __init__(self, origin, transform, class_id):
         self.transform = transform
-        self.train = train
-
-        self.dataset_all = torchvision.datasets.CIFAR100(root = path, train = self.train, download = False)
-        self.dataset = [data for data in self.dataset_all if data[1] in class_id]
+        # self.train = train
+        # self.dataset_all = torchvision.datasets.CIFAR100(root = path, train = self.train, download = False)
+        self.dataset = [data for data in origin if data[1] in class_id]
         self.datanum = len(self.dataset)
 
     def __len__(self):
@@ -101,19 +100,18 @@ def load_split_cifar100(batch_size, split_num):
         'worm'
     ]
 
+    dataset_train = torchvision.datasets.CIFAR100(root = './data', train = True, download = False)
+    dataset_test = torchvision.datasets.CIFAR100(root = './data', train = False, download = False)
+
     class_id_list = torch.chunk(torch.Tensor([i for i in range(100)]), split_num)
 
-    # trainset = torchvision.datasets.CIFAR100(root='./data', train=True,
-    #                                     download=True, transform=train_transforms)
-    # testset = torchvision.datasets.CIFAR100(root='./data', train=False,
-    #                                     download=True, transform=test_transforms)   
     for i in range(split_num):
         classes_list.append([classes[int(id)] for id in class_id_list[i]])
 
-        trainset_list.append(Mydatasets(path='./data', transform=train_transforms, class_id=class_id_list[i], train=True))
+        trainset_list.append(Mydatasets(origin=dataset_train, transform=train_transforms, class_id=class_id_list[i]))
         trainloader_list.append(torch.utils.data.DataLoader(trainset_list[i], batch_size=batch_size, shuffle=True, num_workers=2))
 
-        testset_list.append(Mydatasets(path='./data', transform=test_transforms, class_id=class_id_list[i], train=False))
+        testset_list.append(Mydatasets(origin=dataset_test, transform=test_transforms, class_id=class_id_list[i]))
         testloader_list.append(torch.utils.data.DataLoader(testset_list[i], batch_size=batch_size, shuffle=False, num_workers=2))
         print('task{} dataset loaded'.format(i))
 

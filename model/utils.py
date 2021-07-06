@@ -35,3 +35,16 @@ def load_pre_rg_sfg_state(model, task):
                 model_dict[to_key] = model_dict[from_key]
     model.load_state_dict(model_dict)
     return model
+
+def load_pre_fc_state(model, task):
+    model_dict = model.state_dict()
+    for k, v in model_dict.items():
+        if 'fc_list' in k:
+            if k.split('.')[-2] == str(task):
+                to_key = k
+                from_key = k.split('.')
+                from_key[-2] = str(task - 1)
+                from_key = '.'.join(from_key)
+                model_dict[to_key] = model_dict[from_key]
+    model.load_state_dict(model_dict)
+    return model

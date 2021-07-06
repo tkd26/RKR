@@ -15,7 +15,7 @@ import tensorboardX as tbx
 
 from model.resnet import resnet18, resnet_addfc
 from model.resnet_RKR import resnet18 as resnet18_RKR
-from model.utils import load_pre_model_state, load_pre_rg_sfg_state
+from model.utils import load_pre_model_state, load_pre_rg_sfg_state, load_pre_fc_state
 from data.data_loader import *
 from util import get_config
 
@@ -49,7 +49,7 @@ print(device)
 
 best_score = 0
 
-trainloader_list, testloader_list, classes_list= load_split_cifar100(conf['batch_size'], conf['task_num'])
+trainloader_list, testloader_list, classes_list= load_split_cifar100(conf['batch_size'], conf['model']['task_num'])
 print('Finished Loading Data')
 
 ########################################################################
@@ -58,44 +58,48 @@ print('Finished Loading Data')
 # define model
 init_net = resnet18(pretrained=True)
 
-# net = resnet_addfc(net, 100)
 init_net = resnet_addfc(init_net, 10).to(device)
-
-net = resnet18_RKR(pretrained=False, num_classes=10, K=conf['K']).to(device) # best modelをロードするとさらに良いかも
+net = resnet18_RKR(pretrained=False, conf_model=conf['model']).to(device) # best modelをロードするとさらに良いかも
 net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
 
 # loss
 criterion = nn.CrossEntropyLoss().to(device)
 
-# optimizer
-# optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)
-# scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
-
 # train
-for task in range(conf['task_num']):
+for task in range(conf['model']['task_num']):
     print('------------------------------')
     print('task{}'.format(task))
     trainloader, testloader, classes = trainloader_list[task], testloader_list[task], classes_list[task]
     if task == 0:
         for name, param in net.named_parameters():
+            param.requires_grad = True
             if 'sfg' in name or 'rg' in name:
-                if name.split('.')[-1] == str(task):
-                    param.requires_grad = True
-                    # param.requires_grad = False
+                param.requires_grad = False
+            elif 'fc_list' in name:
+                if name.split('.')[-2] != str(task):
+                    param.requires_grad = False
     else:
-        net = load_pre_rg_sfg_state(net, task) 
+        if task != 1:
+            net = load_pre_rg_sfg_state(net, task)
+        net = load_pre_fc_state(net, task)
+
         for name, param in net.named_parameters():
+            param.requires_grad = False
             if 'sfg' in name or 'rg' in name:
                 if name.split('.')[-1] == str(task):
                     param.requires_grad = True
-            elif name in ['fc.weight', 'fc.bias']:
-                param.requires_grad = True
+            elif 'fc_list' in name:
+                if name.split('.')[-2] == str(task):
+                    param.requires_grad = True
+                
             elif 'bn' in name or 'downsample.1' in name:
                 param.requires_grad = True
-            elif name in ['conv1.weight', 'conv1.bias']:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
+            # elif name in ['conv1.weight', 'conv1.bias']:
+            #     param.requires_grad = True
+
+    for name, param in net.named_parameters():
+        if param.requires_grad:
+            print(name)
 
     # optimizer
     optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
@@ -103,7 +107,7 @@ for task in range(conf['task_num']):
 
     for epoch in range(1, conf['epochs'] + 1):  # loop over the dataset multiple times
 
-        # net.train()
+        net.train()
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
             # get the inputs; data is a list of [inputs, labels]
@@ -126,7 +130,7 @@ for task in range(conf['task_num']):
         # eval
         correct = 0
         total = 0
-        # net.eval()
+        net.eval()
         with torch.no_grad():
             for data in testloader:
                 inputs, labels = data
