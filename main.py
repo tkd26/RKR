@@ -78,6 +78,9 @@ for task in range(conf['model']['task_num']):
             elif 'fc_list' in name:
                 if name.split('.')[-2] != str(task):
                     param.requires_grad = False
+            elif 'bn' in name or 'downsample.1' in name:
+                if name.split('.')[-2] != str(task):
+                    param.requires_grad = False
     else:
         if task != 1:
             net = load_pre_rg_sfg_state(net, task)
@@ -93,7 +96,8 @@ for task in range(conf['model']['task_num']):
                     param.requires_grad = True
                 
             elif 'bn' in name or 'downsample.1' in name:
-                param.requires_grad = True
+                if name.split('.')[-2] == str(task):
+                    param.requires_grad = True
             # elif name in ['conv1.weight', 'conv1.bias']:
             #     param.requires_grad = True
 

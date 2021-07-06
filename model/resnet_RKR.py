@@ -140,10 +140,10 @@ class BasicBlock(nn.Module):
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = norm_layer(planes)
+        self.bn1_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
-        self.bn2 = norm_layer(planes)
+        self.bn2_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
         self.downsample = downsample
         self.stride = stride 
 
@@ -168,7 +168,7 @@ class BasicBlock(nn.Module):
         out = self.conv1(x)
         if self.SFG: 
             out = self.sfg1(out, task=task)
-        out = self.bn1(out)
+        out = self.bn1_list[task](out)
         out = self.relu(out)
 
         if self.RG:
@@ -177,7 +177,7 @@ class BasicBlock(nn.Module):
         out = self.conv2(out)
         if self.SFG:
             out = self.sfg2(out, task=task)
-        out = self.bn2(out)
+        out = self.bn2_list[task](out)
 
         if self.downsample is not None:
             if self.RG:
@@ -186,7 +186,7 @@ class BasicBlock(nn.Module):
             identity = self.downsample[0](x)
             if self.SFG:
                 identity = self.sfg_down_conv(identity, task=task)
-            identity = self.downsample[1](identity)
+            identity = self.downsample[1][task](identity)
 
             # identity = self.downsample(x)
 
@@ -298,7 +298,7 @@ class ResNet(nn.Module):
             self.sfg_conv = SFG_Conv(self.inplanes, conf_model['task_num'])
             # self.sfg_fc = SFG_FC(10, conf_model['task_num'])
 
-        self.bn1 = norm_layer(self.inplanes)
+        self.bn1_list = nn.ModuleList([norm_layer(self.inplanes) for _ in range(conf_model['task_num'])])
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0], conf_model=conf_model)
@@ -341,7 +341,7 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion: 
             downsample = nn.ModuleList([
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                norm_layer(planes * block.expansion),
+                nn.ModuleList([norm_layer(planes * block.expansion) for _ in range(conf_model['task_num'])]),
             ])
 
         layers = []
@@ -368,7 +368,7 @@ class ResNet(nn.Module):
         x = self.conv1(x)
         if self.SFG:
             x = self.sfg_conv(x, task=task)
-        x = self.bn1(x)
+        x = self.bn1_list[task](x)
         x = self.relu(x)
         x = self.maxpool(x)
 

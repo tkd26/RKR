@@ -33,7 +33,7 @@ class RG_Conv(nn.Module):
         super().__init__()
         w, h, c_in, c_out = weight_shape
 
-        scale = 1e-4
+        scale = 1e-5
 
         self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(w * c_in, K)) * scale) for _ in range(task_num)])
         self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h * c_out)) * scale) for _ in range(task_num)])
@@ -45,10 +45,6 @@ class RG_Conv(nn.Module):
 
         # self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(w * c_in, K)) for _ in range(task_num)])
         # self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h * c_out)) for _ in range(task_num)])
-
-        if kernel==3:
-            conv = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=dilation, groups=groups, bias=False, dilation=dilation)
     
     def forward(self, weight, task: int):
         R = torch.mm(self.LM_list[task], self.RM_list[task])
@@ -62,10 +58,10 @@ class RG_FC(nn.Module):
         super().__init__()
         h_in, h_out = weight_shape
 
-        scale = 0.01
+        scale = 1e-5
 
-        self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(h_out, K))) for _ in range(task_num)])
-        self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h_in))) for _ in range(task_num)])
+        self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(h_out, K)) * scale) for _ in range(task_num)])
+        self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h_in)) * scale) for _ in range(task_num)])
 
         self.LM_list[0] = nn.Parameter(torch.zeros(h_out, K))
         self.RM_list[0] = nn.Parameter(torch.zeros(K, h_in))
