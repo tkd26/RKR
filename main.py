@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import argparse
 from data.data_loader import load_cifar100
 import torch
@@ -30,6 +31,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str, help='Path to the config file.')
 # parser.add_argument('--resume', type=bool, default=False, help='Resume training.')
 parser.add_argument('--gpu_id', type=str, default='0', help='gpu id: e.g. 0 1. use -1 for CPU')
+parser.add_argument('--load_base', type=str, default=None)
 opts = parser.parse_args()
 
 conf = get_config(opts.config)
@@ -56,34 +58,46 @@ print('Finished Loading Data')
 # train
 
 # define model
+
+conf_model = conf['model']
+conf_basemodel = conf_model.copy()
+conf_basemodel['RG'] = False
+conf_basemodel['SFG'] = False
+
 init_net = resnet18(pretrained=True)
 
 init_net = resnet_addfc(init_net, 10).to(device)
-net = resnet18_RKR(pretrained=False, conf_model=conf['model']).to(device) # best modelをロードするとさらに良いかも
+net = resnet18_RKR(pretrained=False, conf_model=conf_basemodel).to(device) # best modelをロードするとさらに良いかも
 net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
 
 # loss
 criterion = nn.CrossEntropyLoss().to(device)
 
+start_task = 0
+if opts.load_base != None:
+    state_dict = opts.load_base
+    net.load_state_dict(torch.load(state_dict))
+    start_task = 1
+    print('model loaded')
+
 # train
-for task in range(conf['model']['task_num']):
+for task in range(start_task, conf['model']['task_num']):
     print('------------------------------')
     print('task{}'.format(task))
     trainloader, testloader, classes = trainloader_list[task], testloader_list[task], classes_list[task]
     if task == 0:
         for name, param in net.named_parameters():
-            param.requires_grad = True
-            if 'sfg' in name or 'rg' in name:
-                param.requires_grad = False
-            elif 'fc_list' in name:
-                if name.split('.')[-2] != str(task):
-                    param.requires_grad = False
-            elif 'bn' in name or 'downsample.1' in name:
+            if 'fc_list' in name:
                 if name.split('.')[-2] != str(task):
                     param.requires_grad = False
     else:
-        if task != 1:
-            net = load_pre_rg_sfg_state(net, task)
+        if task == 1:
+            base_net = net
+            net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device)
+            net = load_pre_model_state(from_model=base_net, to_model=net)
+
+        # if task != 1:
+        #     net = load_pre_rg_sfg_state(net, task)
         net = load_pre_fc_state(net, task)
 
         for name, param in net.named_parameters():
@@ -94,12 +108,6 @@ for task in range(conf['model']['task_num']):
             elif 'fc_list' in name:
                 if name.split('.')[-2] == str(task):
                     param.requires_grad = True
-                
-            elif 'bn' in name or 'downsample.1' in name:
-                if name.split('.')[-2] == str(task):
-                    param.requires_grad = True
-            # elif name in ['conv1.weight', 'conv1.bias']:
-            #     param.requires_grad = True
 
     for name, param in net.named_parameters():
         if param.requires_grad:
@@ -109,11 +117,18 @@ for task in range(conf['model']['task_num']):
     optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
     scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
 
+    preparam = 0
+
     for epoch in range(1, conf['epochs'] + 1):  # loop over the dataset multiple times
 
         net.train()
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
+            # if task != 0:
+            #     if torch.any(preparam != net.rg_conv.RM_list[1].clone()):
+            #         preparam = net.rg_conv.RM_list[1].clone()
+            #         print(net.rg_conv.RM_list[1].clone())
+
             # get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
             inputs, labels = inputs.to(device), labels.to(device)

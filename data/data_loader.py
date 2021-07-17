@@ -106,6 +106,8 @@ def load_split_cifar100(batch_size, split_num):
     class_id_list = torch.chunk(torch.Tensor([i for i in range(100)]), split_num)
 
     for i in range(split_num):
+        if i > 1:
+            continue
         classes_list.append([classes[int(id)] for id in class_id_list[i]])
 
         trainset_list.append(Mydatasets(origin=dataset_train, transform=train_transforms, class_id=class_id_list[i]))

@@ -5,6 +5,8 @@ import torch.nn as nn
 from .utils import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
 
+from math import sqrt
+
 seed = 0
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
@@ -29,29 +31,34 @@ model_urls = {
 }
 
 class RG_Conv(nn.Module):
-    def __init__(self, weight_shape, K: int, task_num: int):
+    def __init__(self, layer, K: int, task_num: int):
         super().__init__()
-        w, h, c_in, c_out = weight_shape
 
-        scale = 1e-5
+        self.stride = layer.stride
+        self.padding = layer.padding
+        self.dilation = layer.dilation
+        self.groups = layer.groups
+
+        # self.weight1 = layer.weight.data
+
+        self.shape = layer.weight.shape
+        c_out, c_in, w, h = layer.weight.shape
+
+        scale = 1e-1
 
         self.LM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(w * c_in, K)) * scale) for _ in range(task_num)])
         self.RM_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, h * c_out)) * scale) for _ in range(task_num)])
-        # self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(w * c_in, K) + 1e-4) for _ in range(task_num)])
-        # self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h * c_out) + 1e-4) for _ in range(task_num)])
 
         self.LM_list[0] = nn.Parameter(torch.zeros(w * c_in, K))
         self.RM_list[0] = nn.Parameter(torch.zeros(K, h * c_out))
-
-        # self.LM_list = nn.ParameterList([nn.Parameter(torch.zeros(w * c_in, K)) for _ in range(task_num)])
-        # self.RM_list = nn.ParameterList([nn.Parameter(torch.zeros(K, h * c_out)) for _ in range(task_num)])
     
-    def forward(self, weight, task: int):
-        R = torch.mm(self.LM_list[task], self.RM_list[task])
-        R = R.view(weight.shape)
-        # print(R[0][0][0])
-        R = R + weight
-        return R
+    def forward(self, x, task: int, origin_weight):
+
+        R = torch.mm(self.LM_list[task], self.RM_list[task]).view(self.shape)
+        weight = R + origin_weight
+
+        return nn.functional.conv2d(
+            x, weight=weight, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
 
 class RG_FC(nn.Module):
     def __init__(self, weight_shape, K: int, task_num: int):
@@ -78,13 +85,13 @@ class RG_FC(nn.Module):
 class SFG_Conv(nn.Module):
     def __init__(self, c_out, task_num: int):
         super().__init__()
-        self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
+        self.F_list = nn.ParameterList([nn.Parameter(nn.init.normal_(torch.Tensor(c_out))) for _ in range(task_num)])
+        self.F_list[0] = nn.Parameter(torch.ones(1))
     
     def forward(self, x, task):
-        F = self.F_list[task]
-        F = F.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        F = self.F_list[task].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         F = F.repeat(x.shape[0], 1, x.shape[2], x.shape[3])
-        x *= F
+        x = x * F
         return x
 
 class SFG_FC(nn.Module):
@@ -102,14 +109,14 @@ class SFG_FC(nn.Module):
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=dilation, groups=groups, bias=True, dilation=dilation)
-                    #  padding=dilation, groups=groups, bias=False, dilation=dilation)
+                    #  padding=dilation, groups=groups, bias=True, dilation=dilation)
+                     padding=dilation, groups=groups, bias=False, dilation=dilation)
 
 
 def conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
     """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=True)
-    # return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+    # return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=True)
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 
 class BasicBlock(nn.Module):
@@ -140,18 +147,20 @@ class BasicBlock(nn.Module):
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
+        # self.bn1_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
+        self.bn1 = norm_layer(planes)
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = conv3x3(planes, planes)
-        self.bn2_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
+        # self.bn2_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
+        self.bn2 = norm_layer(planes)
         self.downsample = downsample
         self.stride = stride 
 
         if self.RG:
-            self.rg1 = RG_Conv([3, 3, inplanes, planes], conf_model['K'], conf_model['task_num'])
-            self.rg2 = RG_Conv([3, 3, planes, planes], conf_model['K'], conf_model['task_num'])
+            self.rg_conv1 = RG_Conv(self.conv1, conf_model['K'], conf_model['task_num'])
+            self.rg_conv2 = RG_Conv(self.conv2, conf_model['K'], conf_model['task_num'])
             if self.downsample is not None:
-                self.rg_down_conv = RG_Conv([1, 1, inplanes, planes * self.expansion], conf_model['K'], conf_model['task_num'])
+                self.rg_down_conv = RG_Conv(self.downsample[0], conf_model['K'], conf_model['task_num'])
 
         if self.SFG:
             self.sfg1 = SFG_Conv(planes, conf_model['task_num'])
@@ -163,30 +172,39 @@ class BasicBlock(nn.Module):
         identity = x
 
         if self.RG:
-            self.conv1.weight.data = self.rg1(self.conv1.weight.data, task=task)
+            # out = self.rg_conv1(x, task)
+            out = self.rg_conv1(x, task, self.conv1.weight.data)
+        else:
+            out = self.conv1(x)
 
-        out = self.conv1(x)
         if self.SFG: 
             out = self.sfg1(out, task=task)
-        out = self.bn1_list[task](out)
+        # out = self.bn1_list[task](out)
+        out = self.bn1(out)
         out = self.relu(out)
 
         if self.RG:
-            self.conv2.weight.data = self.rg2(self.conv2.weight.data, task=task)
+            # out = self.rg_conv2(out, task)
+            out = self.rg_conv2(out, task, self.conv2.weight.data)
+        else:
+            out = self.conv2(out)
 
-        out = self.conv2(out)
         if self.SFG:
             out = self.sfg2(out, task=task)
-        out = self.bn2_list[task](out)
+        # out = self.bn2_list[task](out)
+        out = self.bn2(out)
 
         if self.downsample is not None:
             if self.RG:
-                self.downsample[0].weight.data = self.rg_down_conv(self.downsample[0].weight.data, task=task)
-            
-            identity = self.downsample[0](x)
+                # identity = self.rg_down_conv(x, task)
+                identity = self.rg_down_conv(x, task, self.downsample[0].weight.data)
+            else:
+                identity = self.downsample[0](x)
+
             if self.SFG:
                 identity = self.sfg_down_conv(identity, task=task)
-            identity = self.downsample[1][task](identity)
+            # identity = self.downsample[1][task](identity)
+            identity = self.downsample[1](identity)
 
             # identity = self.downsample(x)
 
@@ -291,14 +309,14 @@ class ResNet(nn.Module):
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
                                bias=False)
         if self.RG:
-            self.rg_conv = RG_Conv([7, 7, 3, self.inplanes], conf_model['K'], conf_model['task_num'])
-            # self.rg_fc = RG_FC([512 * block.expansion, conf_model['class_num']], K, conf_model['task_num'])
+            self.rg_conv = RG_Conv(self.conv1, conf_model['K'], conf_model['task_num'])
         
         if self.SFG:
             self.sfg_conv = SFG_Conv(self.inplanes, conf_model['task_num'])
             # self.sfg_fc = SFG_FC(10, conf_model['task_num'])
 
-        self.bn1_list = nn.ModuleList([norm_layer(self.inplanes) for _ in range(conf_model['task_num'])])
+        # self.bn1_list = nn.ModuleList([norm_layer(self.inplanes) for _ in range(conf_model['task_num'])])
+        self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0], conf_model=conf_model)
@@ -341,7 +359,8 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion: 
             downsample = nn.ModuleList([
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                nn.ModuleList([norm_layer(planes * block.expansion) for _ in range(conf_model['task_num'])]),
+                # nn.ModuleList([norm_layer(planes * block.expansion) for _ in range(conf_model['task_num'])]),
+                norm_layer(planes * block.expansion),
             ])
 
         layers = []
@@ -362,13 +381,15 @@ class ResNet(nn.Module):
         pre_conv1 = self.conv1.weight.clone()
 
         if self.RG:
-            self.conv1.weight.data = self.rg_conv(self.conv1.weight.data, task=task)
-        # print(torch.all(pre_conv1==self.conv1.weight))
+            # x = self.rg_conv(x, task)
+            x = self.rg_conv(x, task, self.conv1.weight.data)
+        else:
+            x = self.conv1(x)
 
-        x = self.conv1(x)
         if self.SFG:
             x = self.sfg_conv(x, task=task)
-        x = self.bn1_list[task](x)
+        # x = self.bn1_list[task](x)
+        x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
