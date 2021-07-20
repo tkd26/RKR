@@ -68,6 +68,7 @@ init_net = resnet18(pretrained=True)
 
 init_net = resnet_addfc(init_net, 10).to(device)
 net = resnet18_RKR(pretrained=False, conf_model=conf_basemodel).to(device) # best modelをロードするとさらに良いかも
+# net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device) # best modelをロードするとさらに良いかも
 net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
 
 # loss
@@ -87,6 +88,10 @@ for task in range(start_task, conf['model']['task_num']):
     trainloader, testloader, classes = trainloader_list[task], testloader_list[task], classes_list[task]
     if task == 0:
         for name, param in net.named_parameters():
+            if 'sfg' in name or 'rg' in name:
+                param.requires_grad = False
+                # if name.split('.')[-1] != str(task):
+                #     param.requires_grad = False
             if 'fc_list' in name:
                 if name.split('.')[-2] != str(task):
                     param.requires_grad = False
@@ -96,8 +101,7 @@ for task in range(start_task, conf['model']['task_num']):
             net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device)
             net = load_pre_model_state(from_model=base_net, to_model=net)
 
-        # if task != 1:
-        #     net = load_pre_rg_sfg_state(net, task)
+        # net = load_pre_rg_sfg_state(net, task)
         net = load_pre_fc_state(net, task)
 
         for name, param in net.named_parameters():
@@ -124,10 +128,11 @@ for task in range(start_task, conf['model']['task_num']):
         net.train()
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
-            # if task != 0:
-            #     if torch.any(preparam != net.rg_conv.RM_list[1].clone()):
-            #         preparam = net.rg_conv.RM_list[1].clone()
-            #         print(net.rg_conv.RM_list[1].clone())
+            if task != 0:
+                param = net.layer3[0].rg_down_conv.LM_list[1].clone()
+                if torch.any(preparam != param):
+                    preparam = param
+                    # print(param)
 
             # get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
