@@ -1,6 +1,6 @@
 conf_name: 'RKR'
 batch_size: 200
-epochs: 150
+epochs: 175
 
 model:
   K: 2
