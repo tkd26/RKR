@@ -16,6 +16,7 @@ import tensorboardX as tbx
 
 from model.resnet import resnet18, resnet_addfc
 from model.resnet_RKR import resnet18 as resnet18_RKR
+from model.LeNet_RKR import LeNet as LeNet_RKR
 from model.utils import load_pre_model_state, load_pre_rg_sfg_state, load_pre_fc_state
 from data.data_loader import *
 from util import get_config
@@ -51,7 +52,10 @@ print(device)
 
 best_score = 0
 
-trainloader_list, testloader_list, classes_list= load_split_cifar100(conf['batch_size'], conf['model']['task_num'])
+if conf['dataset'] == 'CIFAR100':
+    trainloader_list, testloader_list, classes_list= load_split_cifar100(conf['batch_size'], conf['model']['task_num'])
+elif conf['dataset'] == 'ImageNet':
+    trainloader_list, testloader_list, classes_list= load_split_Imagenet(conf['batch_size'], conf['model']['task_num'])
 print('Finished Loading Data')
 
 ########################################################################
@@ -60,16 +64,19 @@ print('Finished Loading Data')
 # define model
 
 conf_model = conf['model']
-conf_basemodel = conf_model.copy()
-conf_basemodel['RG'] = False
-conf_basemodel['SFG'] = False
+# conf_basemodel = conf_model.copy()
+# conf_basemodel['RG'] = False
+# conf_basemodel['SFG'] = False
 
-init_net = resnet18(pretrained=True)
+if conf_model['name'] == 'resnet-18':
+    init_net = resnet18(pretrained=True)
 
-init_net = resnet_addfc(init_net, 10).to(device)
-# net = resnet18_RKR(pretrained=False, conf_model=conf_basemodel).to(device) # best modelをロードするとさらに良いかも
-net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device) # best modelをロードするとさらに良いかも
-net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
+    init_net = resnet_addfc(init_net, 10).to(device)
+    # net = resnet18_RKR(pretrained=False, conf_model=conf_basemodel).to(device) # best modelをロードするとさらに良いかも
+    net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device) # best modelをロードするとさらに良いかも
+    net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
+elif conf_model['name'] == 'LeNet':
+    net = LeNet_RKR(conf_model=conf_model).to(device)
 
 # loss
 criterion = nn.CrossEntropyLoss().to(device)
@@ -85,13 +92,13 @@ if opts.load_base != None:
 for task in range(start_task, conf['model']['task_num']):
     print('------------------------------')
     print('task{}'.format(task))
-    trainloader, testloader, classes = trainloader_list[task], testloader_list[task], classes_list[task]
+    trainloader, testloader = trainloader_list[task], testloader_list[task]
     if task == 0:
         for name, param in net.named_parameters():
-            if 'F_list' in name or 'LM_list' in name or 'RM_list' in name:
-                param.requires_grad = False
-                # if name.split('.')[-1] != str(task):
-                #     param.requires_grad = False
+            if 'F_list' in name or 'LM_list' in name or 'RM_list' in name or 'M_list' in name:
+                # param.requires_grad = False
+                if name.split('.')[-1] != str(task):
+                    param.requires_grad = False
             if 'fc_list' in name:
                 if name.split('.')[-2] != str(task):
                     param.requires_grad = False
@@ -101,25 +108,36 @@ for task in range(start_task, conf['model']['task_num']):
         #     net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device)
         #     net = load_pre_model_state(from_model=base_net, to_model=net)
 
-        # net = load_pre_rg_sfg_state(net, task)
+        net = load_pre_rg_sfg_state(net, task)
         net = load_pre_fc_state(net, task)
 
         for name, param in net.named_parameters():
             param.requires_grad = False
-            if 'F_list' in name or 'LM_list' in name or 'RM_list' in name:
+            if 'F_list' in name or 'LM_list' in name or 'RM_list' in name or 'M_list' in name:
                 if name.split('.')[-1] == str(task):
                     param.requires_grad = True
             elif 'fc_list' in name:
                 if name.split('.')[-2] == str(task):
                     param.requires_grad = True
+            # elif 'LM' in name or 'RM' in name:
+            #     param.requires_grad = True
 
     for name, param in net.named_parameters():
         if param.requires_grad:
             print(name)
 
     # optimizer
-    optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
-    scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
+    if conf_model['name'] == 'resnet-18':
+        if conf['dataset'] == 'ImageNet':
+            optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
+            scheduler = MultiStepLR(optimizer, milestones=[20, 40, 60], gamma=0.2)
+        else:
+            optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
+            scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
+    elif conf_model['name'] == 'LeNet':
+        optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
+        scheduler = MultiStepLR(optimizer, milestones=[100, 200, 300, 400], gamma=0.5)
+        # scheduler = MultiStepLR(optimizer, milestones=[20, 40, 60, 80], gamma=0.5)
 
     preparam = 0
 
@@ -128,11 +146,11 @@ for task in range(start_task, conf['model']['task_num']):
         net.train()
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
-            if task != 0:
-                param = net.conv1.LM_list[1].clone()
-                if torch.any(preparam != param):
-                    preparam = param
-                    # print(param)
+            # if task != -1:
+            #     param = net.conv1.LM_list[0].clone()
+            #     if torch.any(preparam != param):
+            #         preparam = param
+            #         # print(param)
 
             # get the inputs; data is a list of [inputs, labels]
             inputs, labels = data

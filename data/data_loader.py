@@ -14,7 +14,10 @@ class Mydatasets(torch.utils.data.Dataset):
         self.transform = transform
         # self.train = train
         # self.dataset_all = torchvision.datasets.CIFAR100(root = path, train = self.train, download = False)
-        self.dataset = [data for data in origin if data[1] in class_id]
+        self.dataset = [[data[0], data[1]] for data in origin if data[1] in class_id]
+        for i in range(len(self.dataset)):
+            before = self.dataset[i][1]
+            self.dataset[i][1] = int((class_id == self.dataset[i][1]).nonzero().squeeze())
         self.datanum = len(self.dataset)
 
     def __len__(self):
@@ -98,7 +101,8 @@ def load_split_cifar100(batch_size, split_num):
     dataset_train = torchvision.datasets.CIFAR100(root = './data', train = True, download = False)
     dataset_test = torchvision.datasets.CIFAR100(root = './data', train = False, download = False)
 
-    class_id_list = torch.chunk(torch.Tensor([i for i in range(100)]), split_num)
+    # class_id_list = torch.chunk(torch.Tensor([i for i in range(100)]), split_num)
+    class_id_list = torch.chunk(torch.randperm(100), split_num)
 
     for i in range(split_num):
         if i > 1:
@@ -110,6 +114,54 @@ def load_split_cifar100(batch_size, split_num):
 
         testset_list.append(Mydatasets(origin=dataset_test, transform=test_transforms, class_id=class_id_list[i]))
         testloader_list.append(torch.utils.data.DataLoader(testset_list[i], batch_size=batch_size, shuffle=False, num_workers=2))
+        print('task{} dataset loaded'.format(i))
+
+    return trainloader_list, testloader_list, classes_list
+
+
+def load_split_Imagenet(batch_size, split_num):
+    img_size = 32
+
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                                     
+    train_transforms = transforms.Compose([
+        transforms.RandomResizedCrop((img_size, img_size), scale=(0.05, 1.0)),
+        transforms.ToTensor(),
+        normalize,
+    ])
+    
+    test_transforms = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        normalize,
+    ])
+
+    class_id_list = []
+    classes_list = []
+    trainset_list = []
+    trainloader_list = []
+    testset_list = []
+    testloader_list = []
+    
+    classes = [None] * 1000
+
+    train_path = '/home/yanai-lab/takeda-m/space/dataset/decathlon-1.0/data/imagenet12/split_train/'
+    test_path = '/home/yanai-lab/takeda-m/space/dataset/decathlon-1.0/data/imagenet12/split_val/'
+
+    class_id_list = torch.chunk(torch.Tensor([i for i in range(1000)]), split_num)
+
+    for i in range(split_num):
+        if i > 1:
+            continue
+        classes_list.append([classes[int(id)] for id in class_id_list[i]])
+
+        train_root = train_path + str(i)
+        trainset_list.append(torchvision.datasets.ImageFolder(root=train_root, transform=train_transforms))
+        trainloader_list.append(torch.utils.data.DataLoader(trainset_list[i], batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True))
+        
+        test_root = test_path + str(i)
+        testset_list.append(torchvision.datasets.ImageFolder(root=test_root, transform=test_transforms))
+        testloader_list.append(torch.utils.data.DataLoader(testset_list[i], batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True))
         print('task{} dataset loaded'.format(i))
 
     return trainloader_list, testloader_list, classes_list

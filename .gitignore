@@ -3,4 +3,4 @@ pytorch_resnet_cifar10
 results
 command.md
 main copy.py
-resnet_RKR copy.py
+*copy.py

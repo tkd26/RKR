@@ -26,7 +26,7 @@ def load_pre_model_state(from_model, to_model):
 def load_pre_rg_sfg_state(model, task):
     model_dict = model.state_dict()
     for k, v in model_dict.items():
-        if 'sfg' in k or 'rg' in k:
+        if 'LM_list' in k or 'RM_list' in k or 'M_list' in k:
             if k.split('.')[-1] == str(task):
                 to_key = k
                 from_key = k.split('.')

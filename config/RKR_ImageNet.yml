@@ -1,12 +1,12 @@
 conf_name: 'RKR'
-dataset: 'CIFAR100'
-batch_size: 200
+dataset: 'ImageNet'
+batch_size: 500
 epochs: 150
 
 model:
   name: 'resnet-18'
   K: 2
   task_num: 10
-  class_num: 10
+  class_num: 100
   RG: True
   SFG: False

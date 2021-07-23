@@ -1,12 +1,12 @@
-conf_name: 'RKR'
+conf_name: 'RKR_LeNet'
 dataset: 'CIFAR100'
 batch_size: 200
-epochs: 150
+epochs: 500
 
 model:
-  name: 'resnet-18'
+  name: 'LeNet'
   K: 2
   task_num: 10
   class_num: 10
   RG: True
-  SFG: False
+  SFG: True
