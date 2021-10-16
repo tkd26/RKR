@@ -13,20 +13,25 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import MultiStepLR
 import tensorboardX as tbx
+import logging
 
 from model.resnet import resnet18, resnet_addfc
 from model.resnet_RKR import resnet18 as resnet18_RKR
+from model.resnet_VD_RKR import resnet18 as resnet18_VD_RKR
 from model.LeNet_RKR import LeNet as LeNet_RKR
 from model.utils import load_pre_model_state, load_pre_rg_sfg_state, load_pre_fc_state
 from data.data_loader import *
 from util import get_config
 
-seed = 0
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+# seed = 0
+# np.random.seed(seed)
+# torch.manual_seed(seed)
+# torch.cuda.manual_seed(seed)
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
+
+logger = logging.getLogger(__name__)
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str, help='Path to the config file.')
@@ -39,6 +44,19 @@ conf = get_config(opts.config)
 ########################################################################
 # Setup
 
+#handler2を作成
+handler = logging.FileHandler(filename="./logfile/{}.log".format(conf['conf_name']))  #handler2はファイル出力
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)8s %(message)s"))
+
+#loggerにハンドラを設定
+logger.addHandler(handler)
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
+
+
 os.environ['CUDA_VISIBLE_DEVICES'] = opts.gpu_id
 
 writer = tbx.SummaryWriter(log_dir="./results/{}/logs/".format(conf['conf_name']))
@@ -48,7 +66,7 @@ if not os.path.exists(model_path):
     os.mkdir(model_path)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(device)
+logger.info(device)
 
 best_score = 0
 
@@ -56,7 +74,9 @@ if conf['dataset'] == 'CIFAR100':
     trainloader_list, testloader_list, classes_list= load_split_cifar100(conf['batch_size'], conf['model']['task_num'])
 elif conf['dataset'] == 'ImageNet':
     trainloader_list, testloader_list, classes_list= load_split_Imagenet(conf['batch_size'], conf['model']['task_num'])
-print('Finished Loading Data')
+elif conf['dataset'] == 'VD':
+    trainloader_list, testloader_list, classes_list= get_VD_loader(conf['batch_size'], conf['model']['task_num'])
+logger.info('Finished Loading Data')
 
 ########################################################################
 # train
@@ -70,13 +90,18 @@ conf_model = conf['model']
 
 if conf_model['name'] == 'resnet-18':
     init_net = resnet18(pretrained=True)
-
     init_net = resnet_addfc(init_net, 10).to(device)
-    # net = resnet18_RKR(pretrained=False, conf_model=conf_basemodel).to(device) # best modelをロードするとさらに良いかも
-    net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device) # best modelをロードするとさらに良いかも
-    net = load_pre_model_state(from_model=init_net, to_model=net) # pretrainモデルで初期化
+    if conf['dataset'] == 'VD':
+        net = resnet18_VD_RKR(pretrained=False, conf_model=conf_model).to(device) 
+    else:
+        # net = resnet18_RKR(pretrained=False, conf_model=conf_basemodel).to(device) # best modelをロードするとさらに良いかも
+        net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device) # best modelをロードするとさらに良いかも
+    net = load_pre_model_state(from_model=init_net, to_model=net).cuda() # pretrainモデルで初期化
 elif conf_model['name'] == 'LeNet':
     net = LeNet_RKR(conf_model=conf_model).to(device)
+
+n_parameters = sum(p.numel() for p in net.parameters() if p.requires_grad)
+logger.info('parameter:', n_parameters)
 
 # loss
 criterion = nn.CrossEntropyLoss().to(device)
@@ -86,30 +111,43 @@ if opts.load_base != None:
     state_dict = opts.load_base
     net.load_state_dict(torch.load(state_dict))
     start_task = 1
-    print('model loaded')
+    logger.info('model loaded')
 
 # train
 for task in range(start_task, conf['model']['task_num']):
-    print('------------------------------')
-    print('task{}'.format(task))
+    if task == 0:
+        continue
+
+    logger.info('------------------------------')
+    logger.info('task{}'.format(task))
     trainloader, testloader = trainloader_list[task], testloader_list[task]
     if task == 0:
+        # for name, param in net.named_parameters():
+        #     if 'F_list' in name or 'LM_list' in name or 'RM_list' in name or 'M_list' in name:
+        #         # param.requires_grad = False
+        #         if name.split('.')[-1] != str(task):
+        #             param.requires_grad = False
+        #     if 'fc_list' in name:
+        #         if name.split('.')[-2] != str(task):
+        #             param.requires_grad = False
+
         for name, param in net.named_parameters():
+            param.requires_grad = False
             if 'F_list' in name or 'LM_list' in name or 'RM_list' in name or 'M_list' in name:
-                # param.requires_grad = False
-                if name.split('.')[-1] != str(task):
-                    param.requires_grad = False
-            if 'fc_list' in name:
-                if name.split('.')[-2] != str(task):
-                    param.requires_grad = False
+                if name.split('.')[-1] == str(task):
+                    param.requires_grad = True
+            elif 'fc_list' in name:
+                if name.split('.')[-2] == str(task):
+                    param.requires_grad = True
+
     else:
         # if task == 1:
         #     base_net = net
         #     net = resnet18_RKR(pretrained=False, conf_model=conf_model).to(device)
         #     net = load_pre_model_state(from_model=base_net, to_model=net)
 
-        net = load_pre_rg_sfg_state(net, task)
-        net = load_pre_fc_state(net, task)
+        # net = load_pre_rg_sfg_state(net, task)
+        # net = load_pre_fc_state(net, task)
 
         for name, param in net.named_parameters():
             param.requires_grad = False
@@ -122,15 +160,18 @@ for task in range(start_task, conf['model']['task_num']):
             # elif 'LM' in name or 'RM' in name:
             #     param.requires_grad = True
 
-    for name, param in net.named_parameters():
-        if param.requires_grad:
-            print(name)
+    # for name, param in net.named_parameters():
+    #     if param.requires_grad:
+    #         print(name)
 
     # optimizer
     if conf_model['name'] == 'resnet-18':
         if conf['dataset'] == 'ImageNet':
             optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
             scheduler = MultiStepLR(optimizer, milestones=[20, 40, 60], gamma=0.2)
+        elif conf['dataset'] == 'VD':
+            optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
+            scheduler = MultiStepLR(optimizer, milestones=[500, 1000, 1500], gamma=0.2)
         else:
             optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
             scheduler = MultiStepLR(optimizer, milestones=[50, 100, 125], gamma=0.1)
@@ -185,13 +226,13 @@ for task in range(start_task, conf['model']['task_num']):
                 correct += (predicted == labels).sum().item()
 
         # save results
-        if epoch % 10 == 0:
+        if epoch % 100 == 0:
             epoch_loss = running_loss / (i+1)
             running_loss = 0.0
             writer.add_scalar("train/task{}".format(task), epoch, epoch_loss)
 
             eval_score = correct / total
-            print('task%d [%d] loss train: %.3f eval: %.3f' % (task, epoch, epoch_loss, eval_score))
+            logger.info('task%d [%d] loss train: %.3f eval: %.3f' % (task, epoch, epoch_loss, eval_score))
             writer.add_scalar("eval/task{}".format(task), epoch, eval_score)
 
             # save trained model

@@ -328,8 +328,11 @@ class ResNet(nn.Module):
                                        dilate=replace_stride_with_dilation[2], conf_model=conf_model)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
+        self.tasks_class = [1000, 100, 100, 2, 47, 43, 1623, 10, 101, 102]
+
         if self.multi_head:
-            self.fc_list = nn.ModuleList([nn.Linear(512 * block.expansion, conf_model['class_num']) for _ in range(conf_model['task_num'])])
+            # self.fc_list = nn.ModuleList([nn.Linear(512 * block.expansion, conf_model['class_num']) for _ in range(conf_model['task_num'])])
+            self.fc_list = nn.ModuleList([nn.Linear(512 * block.expansion, class_num) for class_num in self.tasks_class])
         else:
             self.fc = nn.Linear(512 * block.expansion, conf_model['class_num'])
 

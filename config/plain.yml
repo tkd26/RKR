@@ -1,3 +1,13 @@
 conf_name: 'plain'
 batch_size: 50
 epochs: 200
+dataset: 'ImageNet'
+
+model:
+  name: 'resnet-18'
+  K: 2
+  task_num: 10
+  class_num: 10
+  RG: False
+  SFG: False
+  multi_head: False

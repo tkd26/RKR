@@ -9,4 +9,5 @@ model:
   task_num: 10
   class_num: 10
   RG: True
-  SFG: False
+  SFG: True
+  multi_head: True

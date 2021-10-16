@@ -1,10 +1,10 @@
-conf_name: 'RKR_LeNet'
-dataset: 'CIFAR100'
-batch_size: 200
-epochs: 500
+conf_name: 'RKR_VD'
+dataset: 'VD'
+batch_size: 100
+epochs: 2000
 
 model:
-  name: 'LeNet'
+  name: 'resnet-18'
   K: 2
   task_num: 10
   class_num: 10
