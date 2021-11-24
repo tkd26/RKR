@@ -1,0 +1,13 @@
+conf_name: 'RKR_LeNet_cifar100'
+dataset: 'CIFAR100'
+batch_size: 200
+epochs: 500
+
+model:
+  name: 'LeNet'
+  K: 2
+  task_num: 10
+  classes: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+  RG: True
+  SFG: True
+  multi_head: True

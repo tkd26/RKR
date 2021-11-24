@@ -1,0 +1,13 @@
+conf_name: 'single_VD'
+dataset: 'VD'
+batch_size: 64
+epochs: 10000
+
+model:
+  name: 'resnet-18'
+  K: 2
+  task_num: 10
+  class_num: 10
+  RG: False
+  SFG: False
+  multi_head: True

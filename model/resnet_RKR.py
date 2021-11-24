@@ -67,33 +67,33 @@ class RG_Conv(nn.Module):
         return nn.functional.conv2d(
             x, weight=weight, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
 
-class RG_FC(nn.Module):
-    def __init__(self, RG, K, task_num, h_in, h_out, bias=False):
-        super().__init__()
+# class RG_FC(nn.Module):
+#     def __init__(self, RG, K, task_num, h_in, h_out, bias=False):
+#         super().__init__()
 
-        self.RG = RG
-        self.h_in = h_in
-        self.h_out = h_out
+#         self.RG = RG
+#         self.h_in = h_in
+#         self.h_out = h_out
 
-        self.weight = nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_out, self.h_in)))
+#         self.weight = nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_out, self.h_in)))
 
-        if self.RG:
-            self.scale = 1e-1
-            self.LM_list = nn.ParameterList(
-                [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_in, K)) * self.scale) for _ in range(task_num)])
-            self.RM_list = nn.ParameterList(
-                [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, self.h_out)) * self.scale) for _ in range(task_num)])
-            # self.M_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_out, self.h_in))* self.scale) for _ in range(task_num)])
+#         if self.RG:
+#             self.scale = 1e-1
+#             self.LM_list = nn.ParameterList(
+#                 [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_in, K)) * self.scale) for _ in range(task_num)])
+#             self.RM_list = nn.ParameterList(
+#                 [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, self.h_out)) * self.scale) for _ in range(task_num)])
+#             # self.M_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_out, self.h_in))* self.scale) for _ in range(task_num)])
 
-    def forward(self, x, task: int):
-        if self.RG:
-            R = torch.matmul(self.LM_list[task], self.RM_list[task])
-            R = R.permute(1, 0)
-            # R = self.M_list[task]
-            weight = R + self.weight
-        else:
-            weight = self.weight
-        return nn.functional.linear(x, weight, bias=None)
+#     def forward(self, x, task: int):
+#         if self.RG:
+#             R = torch.matmul(self.LM_list[task], self.RM_list[task])
+#             R = R.permute(1, 0)
+#             # R = self.M_list[task]
+#             weight = R + self.weight
+#         else:
+#             weight = self.weight
+#         return nn.functional.linear(x, weight, bias=None)
 
 class SFG_Conv(nn.Module):
     def __init__(self, c_out, task_num: int):
@@ -108,18 +108,18 @@ class SFG_Conv(nn.Module):
         x = x * F
         return x
 
-class SFG_FC(nn.Module):
-    def __init__(self, c_out, task_num: int):
-        super().__init__()
-        self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
-        # self.F_list = nn.ParameterList([nn.Parameter(nn.init.normal_(torch.Tensor(c_out))) for _ in range(task_num)])
+# class SFG_FC(nn.Module):
+#     def __init__(self, c_out, task_num: int):
+#         super().__init__()
+#         self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
+#         # self.F_list = nn.ParameterList([nn.Parameter(nn.init.normal_(torch.Tensor(c_out))) for _ in range(task_num)])
     
-    def forward(self, x, task: int):
-        F = self.F_list[task]
-        F = F.unsqueeze(0)
-        F = F.repeat(x.shape[0], 1)
-        x *= F
-        return x
+#     def forward(self, x, task: int):
+#         F = self.F_list[task]
+#         F = F.unsqueeze(0)
+#         F = F.repeat(x.shape[0], 1)
+#         x *= F
+#         return x
 
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
     """3x3 convolution with padding"""
@@ -171,10 +171,8 @@ class BasicBlock(nn.Module):
         self.downsample = downsample
         self.stride = stride 
 
-        self.conv1 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], inplanes, planes, kernel_size=3, stride=stride, padding=1)
-        self.conv2 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], planes, planes, kernel_size=3, padding=1)
-        # self.conv1 = conv3x3(inplanes, planes, stride)
-        # self.conv2 = conv3x3(planes, planes)
+        self.conv1 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], inplanes, planes, kernel_size=3, stride=stride, padding=1, dilation=1)
+        self.conv2 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], planes, planes, kernel_size=3, stride=1, padding=1, dilation=1)
 
         if self.SFG:
             self.sfg1 = SFG_Conv(planes, conf_model['task_num'])
@@ -200,10 +198,11 @@ class BasicBlock(nn.Module):
 
         if self.downsample is not None:
             identity = self.downsample[0](x, task)
+            # identity = self.downsample[0](x)
 
+            # スキップのRG，SFGをなしにする
             if self.SFG:
                 identity = self.sfg_down_conv(identity, task=task)
-            # identity = self.downsample[1][task](identity)
             identity = self.downsample[1](identity)
 
         out += identity
@@ -329,7 +328,7 @@ class ResNet(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
         if self.multi_head:
-            self.fc_list = nn.ModuleList([nn.Linear(512 * block.expansion, conf_model['class_num']) for _ in range(conf_model['task_num'])])
+            self.fc_list = nn.ModuleList([nn.Linear(512 * block.expansion, task_class) for task_class in conf_model['classes']])
         else:
             self.fc = nn.Linear(512 * block.expansion, conf_model['class_num'])
 
@@ -428,11 +427,11 @@ def _resnet(
     **kwargs: Any
 ) -> ResNet:
     model = ResNet(block, layers, conf_model, **kwargs)
-    if pretrained:
-        # state_dict = load_state_dict_from_url(model_urls[arch],
-        #                                       progress=progress)
-        state_dict = '/host/space0/takeda-m/jupyter/notebook/RKR/model/resnet18-f37072fd.pth'
-        model.load_state_dict(torch.load(state_dict))
+    # if pretrained:
+    #     state_dict = load_state_dict_from_url(model_urls[arch],
+    #                                           progress=progress)
+    #     # state_dict = '/host/space0/takeda-m/jupyter/notebook/RKR/model/resnet18-f37072fd.pth'
+    #     model.load_state_dict(torch.load(state_dict))
     return model
 
 
@@ -449,16 +448,16 @@ def resnet18(
     return _resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, progress, conf_model,
                    **kwargs)
 
-# def resnet34(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> ResNet:
-#     r"""ResNet-34 model from
-#     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
+def resnet34(pretrained: bool = False, progress: bool = True, conf_model = None, **kwargs: Any) -> ResNet:
+    r"""ResNet-34 model from
+    `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
 
-#     Args:
-#         pretrained (bool): If True, returns a model pre-trained on ImageNet
-#         progress (bool): If True, displays a progress bar of the download to stderr
-#     """
-#     return _resnet('resnet34', BasicBlock, [3, 4, 6, 3], pretrained, progress,
-#                    **kwargs)
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _resnet('resnet34', BasicBlock, [3, 4, 6, 3], pretrained, progress, conf_model,
+                   **kwargs)
 
 
 # def resnet50(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> ResNet:
@@ -525,22 +524,22 @@ def resnet18(
 #                    pretrained, progress, **kwargs)
 
 
-# def wide_resnet50_2(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> ResNet:
-#     r"""Wide ResNet-50-2 model from
-#     `"Wide Residual Networks" <https://arxiv.org/pdf/1605.07146.pdf>`_.
+def wide_resnet50_2(pretrained: bool = False, progress: bool = True, conf_model = None, **kwargs: Any) -> ResNet:
+    r"""Wide ResNet-50-2 model from
+    `"Wide Residual Networks" <https://arxiv.org/pdf/1605.07146.pdf>`_.
 
-#     The model is the same as ResNet except for the bottleneck number of channels
-#     which is twice larger in every block. The number of channels in outer 1x1
-#     convolutions is the same, e.g. last block in ResNet-50 has 2048-512-2048
-#     channels, and in Wide ResNet-50-2 has 2048-1024-2048.
+    The model is the same as ResNet except for the bottleneck number of channels
+    which is twice larger in every block. The number of channels in outer 1x1
+    convolutions is the same, e.g. last block in ResNet-50 has 2048-512-2048
+    channels, and in Wide ResNet-50-2 has 2048-1024-2048.
 
-#     Args:
-#         pretrained (bool): If True, returns a model pre-trained on ImageNet
-#         progress (bool): If True, displays a progress bar of the download to stderr
-#     """
-#     kwargs['width_per_group'] = 64 * 2
-#     return _resnet('wide_resnet50_2', Bottleneck, [3, 4, 6, 3],
-#                    pretrained, progress, **kwargs)
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    kwargs['width_per_group'] = 64 * 2
+    return _resnet('wide_resnet50_2', Bottleneck, [3, 4, 6, 3],
+                   pretrained, progress,  conf_model, **kwargs)
 
 
 # def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> ResNet:

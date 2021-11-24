@@ -1,0 +1,13 @@
+conf_name: 'RKR_rewnet18_ImageNet'
+dataset: 'ImageNet'
+batch_size: 100
+epochs: 150
+
+model:
+  name: 'resnet-18'
+  K: 2
+  task_num: 10
+  classes: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  RG: True
+  SFG: True
+  multi_head: True

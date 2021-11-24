@@ -4,3 +4,9 @@ results
 command.md
 main copy.py
 *copy.py
+logfile
+cifar_net.pth
+model/*.pth
+model/*.t7
+__pycache__
+.vscode

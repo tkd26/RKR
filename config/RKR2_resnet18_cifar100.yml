@@ -1,0 +1,13 @@
+conf_name: 'RKR2_resnet18_cifar100'
+dataset: 'CIFAR100'
+batch_size: 200
+epochs: 150
+
+model:
+  name: 'resnet-18'
+  K: 2
+  task_num: 10
+  classes: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+  RG: True
+  SFG: True
+  multi_head: True

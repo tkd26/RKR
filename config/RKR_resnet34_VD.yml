@@ -1,0 +1,13 @@
+conf_name: 'RKR_resnet34_VD'
+dataset: 'VD'
+batch_size: 64
+epochs: 120
+
+model:
+  name: 'resnet-34'
+  K: 2
+  task_num: 10
+  classes: [1000, 100, 100, 2, 47, 43, 1623, 10, 101, 102]
+  RG: True
+  SFG: True
+  multi_head: True

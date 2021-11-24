@@ -18,6 +18,8 @@ def load_pre_model_state(from_model, to_model):
     from_state_keys = [k for k, v in from_model.state_dict().items()]
     model_dict = to_model.state_dict()
     for k, v in model_dict.items():
+        if 'fc' in k:
+            continue
         if k in from_state_keys:
             model_dict[k] = from_model.state_dict()[k]
     to_model.load_state_dict(model_dict)

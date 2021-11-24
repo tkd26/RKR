@@ -1,0 +1,519 @@
+import sys
+import torch
+from torch import Tensor
+import torch.nn as nn
+from .utils import load_state_dict_from_url
+from typing import Type, Any, Callable, Union, List, Optional
+
+from math import sqrt
+
+seed = 0
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+__all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
+           'resnet152', 'resnext50_32x4d', 'resnext101_32x8d',
+           'wide_resnet50_2', 'wide_resnet101_2']
+
+
+model_urls = {
+    'resnet18': 'https://download.pytorch.org/models/resnet18-f37072fd.pth',
+    'resnet34': 'https://download.pytorch.org/models/resnet34-b627a593.pth',
+    'resnet50': 'https://download.pytorch.org/models/resnet50-0676ba61.pth',
+    'resnet101': 'https://download.pytorch.org/models/resnet101-63fe2227.pth',
+    'resnet152': 'https://download.pytorch.org/models/resnet152-394f9c45.pth',
+    'resnext50_32x4d': 'https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth',
+    'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
+    'wide_resnet50_2': 'https://download.pytorch.org/models/wide_resnet50_2-95faca4d.pth',
+    'wide_resnet101_2': 'https://download.pytorch.org/models/wide_resnet101_2-32ee1156.pth',
+}
+
+'''
+ベースをタスク0で学習
+タスク1以降はフィルタを学習
+'''
+
+class RG_Conv(nn.Module):
+    def __init__(self, RG, K, task_num, c_in, c_out, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=False):
+        super().__init__()
+
+        self.RG = RG
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+
+        self.w = self.h = kernel_size
+        self.c_in = c_in
+        self.c_out = c_out
+
+        self.weight = nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.c_out, self.c_in, self.w, self.h)))
+        
+        '''
+        <Piggyback GANの手法>
+        LMの場合
+
+        出力フィルタ数 = w * c_in
+        非制約フィルタ数 = self.lambdas * (w * c_in)
+        piggybackフィルタ数 = 出力フィルタ数 - 非制約フィルタ数
+        フィルタバンクのフィルタ数 = 出力フィルタ数 + タスク番号 * 非制約フィルタ数
+
+        非制約フィルタ(非制約フィルタ数, K)
+        重み行列(フィルタバンクのフィルタ数, piggybackフィルタ数)
+        フィルタバンク(フィルタバンクのフィルタ数, K)
+
+        フィルタバンク x 重み行列(K, piggybackフィルタ数)
+
+        '''
+        
+        if self.RG:
+            self.lambdas = lambdas = 0.25 # 非制約フィルタの割合
+
+            self.LM_out_filt = self.w * self.c_in # 出力フィルタ数
+
+            self.LM_lamb_num = math.ceil(self.lambdas * self.LM_out_filt) # 非制約フィルタ数
+            self.LM_lamb_rem_num = self.LM_out_filt - self.LM_lamb_num # piggybackフィルタ数
+
+            # リストをtask0の値で初期化
+            self.LM_unc_filt_list = [nn.init.kaiming_uniform_(nn.Parameter(torch.Tensor(self.LM_out_filt, K)))]
+            self.LM_weights_mat_list = [None]
+
+            for task in range(task_num):
+                # 非制約フィルタ（非制約フィルタ数, K）
+                self.LM_unc_filt_list.append(
+                    nn.init.kaiming_uniform_(
+                        nn.Parameter(torch.Tensor(self.LM_lamb_num, K))
+                    )
+                    )
+                # 重み行列（(出力チャネル+タスク番号*非制約フィルタ数), piggybackフィルタ数）
+                # つまりサイズは（フィルタバンクのフィルタ数, piggybackフィルタ数）
+                self.LM_weights_mat_list.append(
+                    nn.init.kaiming_uniform_(
+                        nn.Parameter(torch.Tensor((self.LM_out_filt + task * self.LM_lamb_num), self.LM_lamb_rem_num))
+                    )
+                    )
+
+            # ParameterListにしておく
+            self.LM_unc_filt_list = nn.ParameterList(self.LM_unc_filt_list)
+            self.LM_weights_mat_list = nn.ParameterList(self.LM_weights_mat_list)
+
+            # 過去タスクの非制約フィルタを保存するためのリスト
+            self.LM_concat_unc_filter_list = [None] * task_num
+            
+            
+            # self.scale = 1e-1
+
+            # self.LM_base = nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.w * self.c_in, K)) * self.scale)
+            # self.LM_filter = nn.ParameterList(
+            #     [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.w * self.c_in, 1))) for _ in range(task_num - 1)])
+
+            # self.RM_base = nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, self.h * self.c_out)) * self.scale)
+            # self.RM_filter = nn.ParameterList(
+            #     [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(1, self.h * self.c_out))) for _ in range(task_num - 1)])
+
+            # self.LM_list = nn.ParameterList(
+            #     [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.w * self.c_in, K)) * self.scale) for _ in range(task_num)])
+            # self.RM_list = nn.ParameterList(
+            #     [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, self.h * self.c_out)) * self.scale) for _ in range(task_num)])
+
+    def forward(self, x, task: int):
+        # print(task)
+        if self.RG:
+            
+            if task == 0:
+                R = torch.matmul(self.LM_base, self.RM_base).view(self.w, self.h, self.c_in, self.c_out)
+            else:
+                LM = self.LM_base * self.LM_filter[task - 1]
+                RM = self.RM_base * self.RM_filter[task - 1]
+                R = torch.matmul(LM, RM).view(self.w, self.h, self.c_in, self.c_out)
+
+            R = R.permute(3, 2, 0, 1)
+            weight = R + self.weight
+        else:
+            weight = self.weight
+
+        return nn.functional.conv2d(
+            x, weight=weight, bias=None, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+
+# class RG_FC(nn.Module):
+#     def __init__(self, RG, K, task_num, h_in, h_out, bias=False):
+#         super().__init__()
+
+#         self.RG = RG
+#         self.h_in = h_in
+#         self.h_out = h_out
+
+#         self.weight = nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_out, self.h_in)))
+
+#         if self.RG:
+#             self.scale = 1e-1
+#             self.LM_list = nn.ParameterList(
+#                 [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_in, K)) * self.scale) for _ in range(task_num)])
+#             self.RM_list = nn.ParameterList(
+#                 [nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(K, self.h_out)) * self.scale) for _ in range(task_num)])
+#             # self.M_list = nn.ParameterList([nn.Parameter(nn.init.kaiming_uniform_(torch.Tensor(self.h_out, self.h_in))* self.scale) for _ in range(task_num)])
+
+#     def forward(self, x, task: int):
+#         if self.RG:
+#             R = torch.matmul(self.LM_list[task], self.RM_list[task])
+#             R = R.permute(1, 0)
+#             # R = self.M_list[task]
+#             weight = R + self.weight
+#         else:
+#             weight = self.weight
+#         return nn.functional.linear(x, weight, bias=None)
+
+class SFG_Conv(nn.Module):
+    def __init__(self, c_out, task_num: int):
+        super().__init__()
+        self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
+        # self.F_list = nn.ParameterList([nn.Parameter(nn.init.normal_(torch.Tensor(c_out))) for _ in range(task_num)])
+        # self.F_list[0] = nn.Parameter(torch.ones(1))
+    
+    def forward(self, x, task):
+        F = self.F_list[task].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+        F = F.repeat(x.shape[0], 1, x.shape[2], x.shape[3])
+        x = x * F
+        return x
+
+# class SFG_FC(nn.Module):
+#     def __init__(self, c_out, task_num: int):
+#         super().__init__()
+#         self.F_list = nn.ParameterList([nn.Parameter(torch.ones(c_out)) for _ in range(task_num)])
+#         # self.F_list = nn.ParameterList([nn.Parameter(nn.init.normal_(torch.Tensor(c_out))) for _ in range(task_num)])
+    
+#     def forward(self, x, task: int):
+#         F = self.F_list[task]
+#         F = F.unsqueeze(0)
+#         F = F.repeat(x.shape[0], 1)
+#         x *= F
+#         return x
+
+def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                    #  padding=dilation, groups=groups, bias=True, dilation=dilation)
+                     padding=dilation, groups=groups, bias=False, dilation=dilation)
+
+
+def conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
+    """1x1 convolution"""
+    # return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=True)
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
+
+class BasicBlock(nn.Module):
+    expansion: int = 1
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample = None,
+        groups: int = 1,
+        base_width: int = 64,
+        dilation: int = 1,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+        conf_model = None,
+    ) -> None:
+        super(BasicBlock, self).__init__()
+
+        self.RG = conf_model['RG']
+        self.SFG = conf_model['SFG']
+
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        if groups != 1 or base_width != 64:
+            raise ValueError('BasicBlock only supports groups=1 and base_width=64')
+        if dilation > 1:
+            raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
+        # Both self.conv1 and self.downsample layers downsample the input when stride != 1
+        # self.conv1 = conv3x3(inplanes, planes, stride)
+        # self.bn1_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
+        self.bn1 = norm_layer(planes, affine=False)
+        self.relu = nn.ReLU(inplace=True)
+        # self.conv2 = conv3x3(planes, planes)
+        # self.bn2_list = nn.ModuleList([norm_layer(planes) for _ in range(conf_model['task_num'])])
+        self.bn2 = norm_layer(planes, affine=False)
+        self.downsample = downsample
+        self.stride = stride 
+
+        self.conv1 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], inplanes, planes, kernel_size=3, stride=stride, padding=1, dilation=1)
+        self.conv2 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], planes, planes, kernel_size=3, stride=1, padding=1, dilation=1)
+
+        if self.SFG:
+            self.sfg1 = SFG_Conv(planes, conf_model['task_num'])
+            self.sfg2 = SFG_Conv(planes, conf_model['task_num'])
+            if self.downsample is not None:
+                self.sfg_down_conv = SFG_Conv(planes * self.expansion, conf_model['task_num'])
+
+    def forward(self, x: Tensor, task: int) -> Tensor:
+        identity = x
+
+        out = self.conv1(x, task)
+
+        if self.SFG: 
+            out = self.sfg1(out, task=task)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out, task)
+
+        if self.SFG:
+            out = self.sfg2(out, task=task)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample[0](x, task)
+            # identity = self.downsample[0](x)
+
+            # スキップのRG，SFGをなしにする
+            if self.SFG:
+                identity = self.sfg_down_conv(identity, task=task)
+            identity = self.downsample[1](identity)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class Bottleneck(nn.Module):
+    # Bottleneck in torchvision places the stride for downsampling at 3x3 convolution(self.conv2)
+    # while original implementation places the stride at the first 1x1 convolution(self.conv1)
+    # according to "Deep residual learning for image recognition"https://arxiv.org/abs/1512.03385.
+    # This variant is also known as ResNet V1.5 and improves accuracy according to
+    # https://ngc.nvidia.com/catalog/model-scripts/nvidia:resnet_50_v1_5_for_pytorch.
+
+    expansion: int = 4
+
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None,
+        groups: int = 1,
+        base_width: int = 64,
+        dilation: int = 1,
+        norm_layer: Optional[Callable[..., nn.Module]] = None
+    ) -> None:
+        super(Bottleneck, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        width = int(planes * (base_width / 64.)) * groups
+        # Both self.conv2 and self.downsample layers downsample the input when stride != 1
+        self.conv1 = conv1x1(inplanes, width)
+        self.bn1 = norm_layer(width)
+        self.conv2 = conv3x3(width, width, stride, groups, dilation)
+        self.bn2 = norm_layer(width)
+        self.conv3 = conv1x1(width, planes * self.expansion)
+        self.bn3 = norm_layer(planes * self.expansion)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x: Tensor) -> Tensor:
+        print('Bottleneck')
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class ResNet(nn.Module):
+
+    def __init__(
+        self,
+        block: Type[Union[BasicBlock, Bottleneck]],
+        # block: Type[Union[BasicBlock, Bottleneck]],
+        layers: List[int],
+        conf_model,
+        zero_init_residual: bool = False,
+        groups: int = 1,
+        width_per_group: int = 64,
+        replace_stride_with_dilation: Optional[List[bool]] = None,
+        norm_layer: Optional[Callable[..., nn.Module]] = None
+    ) -> None:
+        super(ResNet, self).__init__()
+
+        self.layers = layers
+        self.RG = conf_model['RG']
+        self.SFG = conf_model['SFG']
+        self.multi_head = conf_model['multi_head']
+
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        self.inplanes = 64
+        self.dilation = 1
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError("replace_stride_with_dilation should be None "
+                             "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
+        self.groups = groups
+        self.base_width = width_per_group
+
+        self.conv1 = RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], 3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+        # self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+        
+        if self.SFG:
+            self.sfg_conv = SFG_Conv(self.inplanes, conf_model['task_num'])
+            # self.sfg_fc = SFG_FC(10, conf_model['task_num'])
+
+        # self.bn1_list = nn.ModuleList([norm_layer(self.inplanes) for _ in range(conf_model['task_num'])])
+        self.bn1 = norm_layer(self.inplanes, affine=False)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, layers[0], conf_model=conf_model)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
+                                       dilate=replace_stride_with_dilation[0], conf_model=conf_model)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
+                                       dilate=replace_stride_with_dilation[1], conf_model=conf_model)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
+                                       dilate=replace_stride_with_dilation[2], conf_model=conf_model)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        if self.multi_head:
+            self.fc_list = nn.ModuleList([nn.Linear(512 * block.expansion, task_class) for task_class in conf_model['classes']])
+        else:
+            self.fc = nn.Linear(512 * block.expansion, conf_model['class_num'])
+
+        for m in self.modules():
+            if isinstance(m, RG_Conv):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            # if isinstance(m, nn.Conv2d):
+            #     nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            # elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            #     nn.init.constant_(m.weight, 1)
+            #     nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)  # type: ignore[arg-type]
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)  # type: ignore[arg-type]
+
+    def _make_layer(self, block: Type[Union[BasicBlock, Bottleneck]], planes: int, blocks: int,
+                    stride: int = 1, dilate: bool = False, conf_model = None) -> nn.Sequential:
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes * block.expansion: 
+            downsample = nn.ModuleList([
+                RG_Conv(self.RG, conf_model['K'], conf_model['task_num'], self.inplanes, planes * block.expansion, 1, stride),
+                norm_layer(planes * block.expansion, affine=False),
+            ])
+
+            # downsample = nn.ModuleList([
+            #     conv1x1(self.inplanes, planes * block.expansion, stride),
+            #     norm_layer(planes * block.expansion, affine=False),
+            # ])
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
+                            self.base_width, previous_dilation, norm_layer, conf_model))
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes, groups=self.groups,
+                                base_width=self.base_width, dilation=self.dilation,
+                                norm_layer=norm_layer, conf_model=conf_model))
+
+        return nn.ModuleList(layers)
+
+    def _forward_impl(self, x: Tensor, task: int) -> Tensor:
+
+        # See note [TorchScript super()]
+
+        x = self.conv1(x, task)
+
+        if self.SFG:
+            x = self.sfg_conv(x, task=task)
+        # x = self.bn1_list[task](x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        for i in range(self.layers[0]):
+            x = self.layer1[i](x, task)
+        for i in range(self.layers[1]):
+            x = self.layer2[i](x, task)
+        for i in range(self.layers[2]):
+            x = self.layer3[i](x, task)
+        for i in range(self.layers[3]):
+            x = self.layer4[i](x, task)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+
+        if self.multi_head:
+            x = self.fc_list[task](x)
+        else:
+            x = self.fc(x)
+
+        return x
+
+    def forward(self, x: Tensor, task: int) -> Tensor:
+        return self._forward_impl(x, task)
+
+
+def _resnet(
+    arch: str,
+    block: Type[Union[BasicBlock, Bottleneck]],
+    layers: List[int],
+    pretrained: bool,
+    progress: bool,
+    conf_model,
+    **kwargs: Any
+) -> ResNet:
+    model = ResNet(block, layers, conf_model, **kwargs)
+    # if pretrained:
+    #     state_dict = load_state_dict_from_url(model_urls[arch],
+    #                                           progress=progress)
+    #     # state_dict = '/host/space0/takeda-m/jupyter/notebook/RKR/model/resnet18-f37072fd.pth'
+    #     model.load_state_dict(torch.load(state_dict))
+    return model
+
+
+def resnet18(
+    pretrained: bool = False, progress: bool = True, conf_model = None, **kwargs: Any
+    ) -> ResNet:
+    r"""ResNet-18 model from
+    `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
+
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    return _resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, progress, conf_model,
+                   **kwargs)
